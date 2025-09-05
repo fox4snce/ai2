@@ -9,6 +9,7 @@ import json
 import yaml
 import jsonschema
 from typing import Dict, List, Optional, Any, Tuple
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 import logging
@@ -193,7 +194,7 @@ class ToolRegistry:
             # Generic check
             return input_kind in payload or f"query.{input_kind}" in payload.get("kind", "")
     
-    def select_best_tool(self, obligation_type: str, obligation_payload: Dict) -> Optional[ToolContract]:
+    def select_best_tool(self, obligation_type: str, obligation_payload: Dict, selection_seed: Optional[str] = None) -> Optional[ToolContract]:
         """Select the best tool for an obligation using the policy."""
         candidates = self.find_tools_for_obligation(obligation_type)
         
@@ -213,11 +214,15 @@ class ToolRegistry:
             return None
         
         # Select by policy: reliability > cost > latency > alphabetical
-        def tool_score(tool: ToolContract) -> Tuple[int, int, int, str]:
+        def tool_score(tool: ToolContract) -> Tuple[int, int, int, int]:
             reliability_score = {"high": 3, "medium": 2, "low": 1}[tool.reliability]
             cost_score = {"tiny": 4, "low": 3, "medium": 2, "high": 1}[tool.cost]
             latency_score = 1000 / max(tool.latency_ms, 1)  # Higher is better
-            return (reliability_score, cost_score, latency_score, tool.name)
+            # Stable tiebreak using hash of (selection_seed, tool_name)
+            local_seed = selection_seed or "default-seed"
+            tiebreak_bytes = f"{local_seed}:{tool.name}".encode("utf-8")
+            tiebreak_int = int(hashlib.sha256(tiebreak_bytes).hexdigest(), 16)
+            return (reliability_score, cost_score, int(latency_score), tiebreak_int)
         
         return max(valid_candidates, key=tool_score)
 

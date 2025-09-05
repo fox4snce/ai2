@@ -234,7 +234,8 @@ class Conductor:
             # 2. Select best tool
             selected_tool = self.registry.select_best_tool(
                 parsed_obligation.type,
-                parsed_obligation.raw_payload
+                parsed_obligation.raw_payload,
+                selection_seed=obligation_id
             )
             
             if not selected_tool:

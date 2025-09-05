@@ -1,0 +1,69 @@
+{
+  "trace_id": "<uuid>",
+  "timestamp": "<ISO8601>",
+  "user_input": "<string>",
+  "obligations": [
+    { "id": "OB_1_<uuid>", "status": "resolved" }
+  ],
+  "tool_runs": [
+    {
+      "id": "OB_1_<uuid>",
+      "tool_name": "Reasoning.Core",
+      "success": true,
+      "duration_ms": 12,
+      "error": null,
+      "clarify_slot": null,
+      "inputs": {
+        "mode": "deduction",
+        "query": {"predicate": "grandparentOf", "args": ["Alice", "Cara"]},
+        "facts": [
+          {"predicate": "parentOf", "args": ["Alice", "Bob"]},
+          {"predicate": "parentOf", "args": ["Bob", "Cara"]}
+        ],
+        "domains": ["kinship"],
+        "budgets": {"max_depth": 3, "beam": 4, "time_ms": 100}
+      },
+      "outputs": {
+        "kind": "logic.answer",
+        "value": true,
+        "trajectory": {
+          "steps": [
+            {"op": "infer", "rule": "parent∘parent→grandparent", "bindings": {"X": "Alice", "Y": "Bob", "Z": "Cara"}}
+          ],
+          "alt_paths": [],
+          "metrics": {"depth_used": 1, "nodes_expanded": 1, "time_ms": 11},
+          "rules_fired": ["parent∘parent→grandparent"],
+          "why_not": []
+        },
+        "capabilities_satisfied": ["REPORT.logic"]
+      }
+    }
+  ],
+  "assertions": [
+    {
+      "id": "A_OB_1_<uuid>_logic_0",
+      "subject_id": "Alice",
+      "predicate": "grandparentOf",
+      "object": "Cara",
+      "proof_ref": "T_OB_1_<uuid>",
+      "source_id": "Reasoning.Core@0.1.0",
+      "confidence": 1.0
+    }
+  ],
+  "verification": {"passed": true, "method": "disabled", "details": "Verification disabled", "duration_ms": 0, "error": null},
+  "status": "resolved",
+  "final_answer": "true",
+  "metrics": {
+    "total_latency_ms": 15,
+    "obligation_count": 1,
+    "tool_run_count": 1,
+    "assertion_count": 1,
+    "verification_passed": true,
+    "escalation_count": 0,
+    "clarify_count": 0,
+    "success_rate": 1.0
+  },
+  "capabilities_satisfied": ["REPORT.logic"]
+}
+
+
