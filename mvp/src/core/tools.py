@@ -33,13 +33,17 @@ class ToolContract:
     reliability: str
     latency_ms: int
     verify_mode: str = "blocking"
+    capability_tier: str = "safe"
     auth_required: bool = False
     scopes: List[str] = None
+    supports: List[str] = None
     implementation: Dict = None
     
     def __post_init__(self):
         if self.scopes is None:
             self.scopes = []
+        if self.supports is None:
+            self.supports = []
         if self.implementation is None:
             self.implementation = {}
 
@@ -114,8 +118,10 @@ class ToolRegistry:
             reliability=data.get("reliability", "medium"),
             latency_ms=data.get("latency_ms", 100),
             verify_mode=data.get("verify_mode", "blocking"),
+            capability_tier=data.get("capability_tier", "safe"),
             auth_required=data.get("auth_required", False),
             scopes=data.get("scopes", []),
+            supports=data.get("supports", []),
             implementation=data.get("implementation", {})
         )
     
@@ -126,6 +132,18 @@ class ToolRegistry:
     def list_tools(self) -> List[str]:
         """List all registered tool names."""
         return list(self.tools.keys())
+
+    def find_support_tools(self, required_preconditions: List[str]) -> List[ToolContract]:
+        """Find tools that declare support for any of the given preconditions."""
+        if not required_preconditions:
+            return []
+        req = set(required_preconditions)
+        results: List[ToolContract] = []
+        for tool in self.tools.values():
+            supports = set(tool.supports or [])
+            if supports.intersection(req):
+                results.append(tool)
+        return results
     
     def find_tools_for_obligation(self, obligation_type: str) -> List[ToolContract]:
         """Find tools that can satisfy an obligation type."""
@@ -244,7 +262,9 @@ class ToolExecutor:
             "EvalMath": self._mock_evalmath,
             "TextOps.CountLetters": self._mock_countletters,
             "PeopleSQL": self._mock_peoplesql,
-            "Reasoning.Core": self._mock_reasoning_core
+            "Reasoning.Core": self._mock_reasoning_core,
+            "Prep.Stub": self._mock_prep_stub,
+            "GuardrailChecker": self._mock_guardrail_checker
         }
     
     def execute_tool(self, tool_name: str, inputs: Dict) -> Dict:
@@ -325,6 +345,27 @@ class ToolExecutor:
                 results.append(person)
         
         return {"people": results}
+
+    def _mock_prep_stub(self, inputs: Dict) -> Dict:
+        """Mock preparation tool that marks preconditions as satisfied."""
+        names = inputs.get("preconditions", [])
+        return {"ok": True, "satisfied": names}
+
+    def _mock_guardrail_checker(self, inputs: Dict) -> Dict:
+        """Mock guardrail checker: returns failure for known violating predicates."""
+        constraints = inputs.get("constraints", []) or []
+        violations = []
+        for c in constraints:
+            pred = c.get("predicate") or c.get("pred")
+            if pred == "calendar.free" and c.get("args"):
+                # pretend the guardrail fails if person == "Alice" on Mondays
+                args = c.get("args")
+                who = args[0] if isinstance(args, list) and args else args.get("person") if isinstance(args, dict) else None
+                if who in ("Alice",):
+                    violations.append({"predicate": pred, "reason": "busy"})
+        if violations:
+            return {"status": "failed", "justification": violations}
+        return {"status": "passed"}
 
     def _mock_reasoning_core(self, inputs: Dict) -> Dict:
         """Minimal deterministic reasoning/planning stub.

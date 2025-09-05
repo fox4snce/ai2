@@ -107,6 +107,17 @@
       "description": "Verification behavior for this tool",
       "default": "blocking"
     },
+    "capability_tier": {
+      "type": "string",
+      "enum": ["safe", "io", "net", "privileged"],
+      "description": "Sandbox capability tier for this tool",
+      "default": "safe"
+    },
+    "supports": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Predicates or preconditions this tool can help establish"
+    },
     "auth_required": {
       "type": "boolean",
       "default": false

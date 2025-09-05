@@ -1,0 +1,29 @@
+name: GuardrailChecker
+description: Evaluates guardrail constraints before executing plans
+version: 1.0.0
+consumes:
+  - kind: guardrails.constraints
+    schema:
+      type: object
+      properties:
+        constraints:
+          type: array
+          items: { type: object }
+        goal:
+          type: object
+      required: [constraints]
+produces:
+  - event: { kind: guardrail_check }
+satisfies: []
+preconditions: []
+postconditions:
+  - guardrails_evaluated
+cost: tiny
+reliability: high
+latency_ms: 5
+verify_mode: blocking
+capability_tier: safe
+supports: []
+implementation:
+  type: builtin
+

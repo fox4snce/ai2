@@ -1,0 +1,27 @@
+name: Prep.Stub
+description: Establishes preconditions for other tools
+version: 1.0.0
+consumes:
+  - kind: query.logic
+    schema:
+      type: object
+      properties:
+        preconditions:
+          type: array
+          items: { type: string }
+      required: []
+produces:
+  - event: { kind: prep_ok }
+satisfies: []
+preconditions: []
+postconditions:
+  - prep_ok
+cost: tiny
+reliability: high
+latency_ms: 1
+verify_mode: "off"
+capability_tier: safe
+supports:
+  - rules_enabled_or_builtin
+implementation:
+  type: builtin

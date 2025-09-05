@@ -26,6 +26,9 @@ cost: tiny
 reliability: high
 latency_ms: 5
 verify_mode: non_blocking
+capability_tier: safe
+supports:
+  - expr_parses
 implementation:
   type: python
   entry_point: evalmath.evaluate

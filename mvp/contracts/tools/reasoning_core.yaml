@@ -41,6 +41,9 @@ cost: tiny
 reliability: high
 latency_ms: 10
 verify_mode: non_blocking
+capability_tier: safe
+supports:
+  - rules_enabled_or_builtin
 implementation:
   type: builtin
 

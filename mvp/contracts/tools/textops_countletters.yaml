@@ -31,6 +31,10 @@ cost: tiny
 reliability: high
 latency_ms: 2
 verify_mode: non_blocking
+capability_tier: safe
+supports:
+  - letter_is_single_char
+  - word_is_non_empty
 implementation:
   type: python
   entry_point: textops.count_letters

@@ -79,11 +79,32 @@ def demo_truncated() -> Dict[str, Any]:
     return run_obligation(obligations)
 
 
+def demo_guardrail_fail() -> Dict[str, Any]:
+    obligations = {
+        "obligations": [
+            {
+                "type": "ACHIEVE",
+                "payload": {
+                    "state": "plan",
+                    "mode": "planning",
+                    "goal": {"predicate": "event.scheduled", "args": {"person": "Alice", "time": "2025-09-08T10:00Z"}},
+                    "guardrails": [
+                        {"predicate": "calendar.free", "args": ["Alice", {"start": "2025-09-08T09:00Z", "end": "2025-09-08T17:00Z"}]}
+                    ],
+                    "budgets": {"max_depth": 3, "beam": 3, "time_ms": 150}
+                }
+            }
+        ]
+    }
+    return run_obligation(obligations)
+
+
 def main():
     cases = [
         ("logic_true", demo_logic_true),
         ("plan_clarify", demo_plan_clarify),
         ("logic_truncated", demo_truncated),
+        ("guardrail_fail", demo_guardrail_fail),
     ]
     results = {}
     for name, fn in cases:

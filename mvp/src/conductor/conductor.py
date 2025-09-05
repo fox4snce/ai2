@@ -247,7 +247,19 @@ class Conductor:
                     error=error_msg
                 )
             
-            # 3. Execute tool
+            # 3a. Pre-run supports: execute any tools that can establish selected tool preconditions
+            try:
+                required_preconds = list(selected_tool.preconditions or [])
+                support_tools = self.registry.find_support_tools(required_preconds)
+                for st in support_tools:
+                    try:
+                        _ = self.executor.execute_tool(st.name, {"preconditions": required_preconds})
+                    except Exception:
+                        logger.warning(f"Support tool {st.name} failed; continuing without it")
+            except Exception:
+                logger.debug("No support tools executed")
+
+            # 3b. Execute tool
             tool_inputs = self._prepare_tool_inputs(selected_tool, parsed_obligation)
             tool_outputs = self.executor.execute_tool(selected_tool.name, tool_inputs)
             
@@ -298,6 +310,29 @@ class Conductor:
                     outputs=tool_outputs,
                     clarify_slot=tool_outputs.get("clarify")
                 )
+            # Guardrail enforcement for ACHIEVE.plan: run GuardrailChecker if constraints present
+            if parsed_obligation.type == "ACHIEVE" and parsed_obligation.raw_payload.get("state") == "plan":
+                constraints = parsed_obligation.raw_payload.get("guardrails") or []
+                if constraints:
+                    checker = self.registry.get_tool("GuardrailChecker")
+                    if checker:
+                        chk_inputs = {"constraints": constraints, "goal": parsed_obligation.raw_payload.get("goal")}
+                        chk_out = self.executor.execute_tool("GuardrailChecker", chk_inputs)
+                        if (chk_out or {}).get("status") == "failed":
+                            self.db.update_obligation_status(obligation_id, "failed")
+                            # augment outputs with why_not
+                            tool_outputs = dict(tool_outputs)
+                            tool_outputs["why_not"] = ["guardrail_failed"]
+                            tool_outputs["justification"] = chk_out.get("justification", [])
+                            return ExecutionResult(
+                                obligation_id=obligation_id,
+                                success=False,
+                                tool_name=selected_tool.name,
+                                assertions=assertions,
+                                duration_ms=int((time.time() - start_time) * 1000),
+                                inputs=tool_inputs,
+                                outputs=tool_outputs
+                            )
             else:
                 self.db.update_obligation_status(obligation_id, "resolved")
             
