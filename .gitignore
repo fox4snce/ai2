@@ -1,0 +1,13 @@
+﻿**/.venv/
+/.venv/
+mvp/.venv/
+**/__pycache__/
+**/*.py[cod]
+**/.pytest_cache/
+**/.ruff_cache/
+**/.mypy_cache/
+.DS_Store
+.idea/
+.vscode/
+.coverage
+coverage.xml
