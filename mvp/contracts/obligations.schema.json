@@ -54,6 +54,13 @@
             "time"
           ]
         },
+        "mode": {"type": "string"},
+        "query": {"type": "object"},
+        "facts": {"type": "array"},
+        "facts_bundle_id": {"type": "string"},
+        "budgets": {"type": "object"},
+        "rules": {"type": "array"},
+        "domains": {"type": "array"},
         "expr": {"type": "string"},
         "field": {"type": "string"},
         "filters": {
@@ -73,7 +80,9 @@
         "event": {"type": "object"},
         "condition": {"type": "string"},
         "kind": {"type": "string"},
-        "goal": {"type": "object"}
+        "goal": {"type": "object"},
+        "budgets": {"type": "object"},
+        "mode": {"type": "string"}
       },
       "required": ["state"],
       "additionalProperties": false

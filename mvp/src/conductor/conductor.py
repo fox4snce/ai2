@@ -136,7 +136,8 @@ class Conductor:
             "verification": self._serialize_verification_result(verification_result),
             "status": status,
             "final_answer": final_answer,
-            "metrics": metrics
+            "metrics": metrics,
+            "capabilities_satisfied": self._collect_capabilities(execution_results)
         }
         # If any clarify requested, include it in trace for gating
         if any(er.clarify_slot for er in execution_results):
@@ -257,7 +258,9 @@ class Conductor:
                     obligation_id=obligation_id,
                     success=False,
                     tool_name=selected_tool.name,
-                    error=error_msg
+                    error=error_msg,
+                    inputs=tool_inputs,
+                    outputs=tool_outputs
                 )
             
             # 5. Create assertions from tool outputs
@@ -270,7 +273,32 @@ class Conductor:
                 self.db.create_assertion(assertion)
             
             # 7. Update obligation status
-            self.db.update_obligation_status(obligation_id, "resolved")
+            # If tool indicated truncated or clarify, do not mark resolved
+            if tool_outputs.get("status") == "truncated":
+                self.db.update_obligation_status(obligation_id, "failed")
+                return ExecutionResult(
+                    obligation_id=obligation_id,
+                    success=False,
+                    tool_name=selected_tool.name,
+                    assertions=assertions,
+                    duration_ms=int((time.time() - start_time) * 1000),
+                    inputs=tool_inputs,
+                    outputs=tool_outputs
+                )
+            elif tool_outputs.get("clarify"):
+                # surface clarify without resolving
+                return ExecutionResult(
+                    obligation_id=obligation_id,
+                    success=False,
+                    tool_name=selected_tool.name,
+                    assertions=assertions,
+                    duration_ms=int((time.time() - start_time) * 1000),
+                    inputs=tool_inputs,
+                    outputs=tool_outputs,
+                    clarify_slot=tool_outputs.get("clarify")
+                )
+            else:
+                self.db.update_obligation_status(obligation_id, "resolved")
             
             duration_ms = int((time.time() - start_time) * 1000)
             
@@ -387,15 +415,17 @@ class Conductor:
             # Map REPORT.logic and ACHIEVE.plan to engine modes
             if parsed_obligation.type == "REPORT" and payload.get("kind") == "logic":
                 return {
-                    "mode": "deduction",
+                    "mode": payload.get("mode") or "deduction",
                     "query": payload.get("query"),
                     "facts": payload.get("facts", []),
                     "rules": payload.get("rules", []),
+                    "domains": payload.get("domains", []),
+                    "simulate_slow": payload.get("simulate_slow"),
                     "budgets": (payload.get("budgets") or (parsed_obligation.raw_payload.get("budgets") if isinstance(parsed_obligation.raw_payload, dict) else None)) or {"max_depth": 3, "beam": 4, "time_ms": 100}
                 }
             if parsed_obligation.type == "ACHIEVE" and payload.get("kind") == "plan":
                 return {
-                    "mode": "planning",
+                    "mode": payload.get("mode") or "planning",
                     "goal": payload.get("goal"),
                     "budgets": payload.get("budgets") or {"max_depth": 3, "beam": 3, "time_ms": 150}
                 }
@@ -447,7 +477,22 @@ class Conductor:
                 assertions.append(assertion)
 
         elif tool.name == "Reasoning.Core":
-            # If deduction produced assertions, persist them with proof_ref in source_id
+            # Persist trajectory if provided and use its id for proof_ref
+            proof_tid = None
+            if outputs.get("trajectory"):
+                from ..core.database import Trajectory
+                tid = f"T_{obligation_id}"
+                traj = Trajectory(
+                    id=tid,
+                    run_id=obligation_id,
+                    steps_jsonb=outputs["trajectory"].get("steps", []),
+                    start_context_jsonb=None,
+                    end_context_jsonb=None,
+                    metrics_jsonb=outputs["trajectory"].get("metrics", {})
+                )
+                self.db.create_trajectory(traj)
+                proof_tid = tid
+            # If deduction true, persist assertions with proof_ref and source
             if outputs.get("kind") == "logic.answer" and outputs.get("value") is True:
                 for i, a in enumerate(outputs.get("assertions", [])):
                     subject = a.get("subject", f"Subj_{obligation_id}_{i}")
@@ -458,10 +503,12 @@ class Conductor:
                         subject_id=str(subject),
                         predicate=str(predicate),
                         object=str(obj),
+                        proof_ref=proof_tid,
                         confidence=1.0,
-                        source_id=f"S_{tool.name}"
+                        source_id=f"Reasoning.Core@0.1.0"
                     )
                     assertions.append(assertion)
+            # False: do not write assertions
         
         # Minimal ACHIEVE(name) handling → save as assertion for status.name
         elif tool.name not in ("EvalMath", "TextOps.CountLetters", "PeopleSQL"):
@@ -594,6 +641,8 @@ class Conductor:
             "subject_id": assertion.subject_id,
             "predicate": assertion.predicate,
             "object": assertion.object,
+            "proof_ref": getattr(assertion, "proof_ref", None),
+            "source_id": assertion.source_id,
             "confidence": assertion.confidence
         }
     
@@ -616,3 +665,13 @@ class Conductor:
         """Get tool outputs from execution result (for verification)."""
         # This would normally be stored in the result
         return {}
+
+    def _collect_capabilities(self, execution_results: List[ExecutionResult]) -> List[str]:
+        caps = []
+        for er in execution_results:
+            if not er or not er.outputs:
+                continue
+            for c in er.outputs.get("capabilities_satisfied", []) or []:
+                if c not in caps:
+                    caps.append(c)
+        return caps

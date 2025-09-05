@@ -33,6 +33,11 @@ class ObligationPayload:
     value: Optional[str] = None
     query: Optional[Dict] = None
     budgets: Optional[Dict] = None
+    rules: Optional[List[Dict]] = None
+    domains: Optional[List[str]] = None
+    mode: Optional[str] = None
+    facts: Optional[List[Dict]] = None
+    facts_bundle_id: Optional[str] = None
 
 
 @dataclass
@@ -97,6 +102,11 @@ class ObligationParser:
         """Parse a single obligation."""
         obligation_type = obligation_data["type"]
         payload_data = obligation_data["payload"]
+        # Enforce mode for logic/planning kinds
+        if isinstance(payload_data, dict):
+            k = payload_data.get("kind")
+            if k in ("logic", "plan") and not payload_data.get("mode"):
+                raise ValueError("mode is required for logic/plan payloads")
         
         # Create payload object based on type
         payload = self._create_payload(obligation_type, payload_data)
@@ -118,7 +128,12 @@ class ObligationParser:
                 letter=payload_data.get("letter"),
                 word=payload_data.get("word"),
                 query=payload_data.get("query"),
-                budgets=payload_data.get("reasoning", {}).get("budgets") if isinstance(payload_data.get("reasoning"), dict) else payload_data.get("budgets")
+                budgets=payload_data.get("reasoning", {}).get("budgets") if isinstance(payload_data.get("reasoning"), dict) else payload_data.get("budgets"),
+                rules=payload_data.get("rules"),
+                domains=payload_data.get("domains"),
+                mode=payload_data.get("mode"),
+                facts=payload_data.get("facts"),
+                facts_bundle_id=payload_data.get("facts_bundle_id")
             )
         elif obligation_type == "ACHIEVE":
             return ObligationPayload(
@@ -126,7 +141,8 @@ class ObligationParser:
                 pred=payload_data.get("pred"),
                 args=payload_data.get("args"),
                 value=payload_data.get("value"),
-                budgets=payload_data.get("reasoning", {}).get("budgets") if isinstance(payload_data.get("reasoning"), dict) else payload_data.get("budgets")
+                budgets=payload_data.get("reasoning", {}).get("budgets") if isinstance(payload_data.get("reasoning"), dict) else payload_data.get("budgets"),
+                mode=payload_data.get("mode")
             )
         elif obligation_type in ["MAINTAIN", "AVOID"]:
             return ObligationPayload(

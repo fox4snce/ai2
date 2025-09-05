@@ -31,6 +31,8 @@ def test_reasoning_multipath_grandparent_and_planning():
                     "type": "REPORT",
                     "payload": {
                         "kind": "logic",
+                        "mode": "deduction",
+                        "domains": ["kinship"],
                         "query": {"predicate": "grandparentOf", "args": ["Alice", "Cara"]},
                         "facts": [
                             {"predicate": "parentOf", "args": ["Alice", "Bob"]},
@@ -43,10 +45,17 @@ def test_reasoning_multipath_grandparent_and_planning():
                 }
             ]
         }
+        print("\n[Multi-path Deduction] Request:")
+        print(json.dumps(body_multi, indent=2))
         r = requests.post(BASE + "/v1/obligations/execute", json=body_multi)
-        assert r.status_code == 200
+        print("Status:", r.status_code)
         data = r.json()
-        assert data.get("final_answer") == "true"
+        print("final_answer=", data.get("final_answer"))
+        expected = "true"
+        actual = data.get("final_answer")
+        print("Expected:", expected, "Actual:", actual)
+        assert r.status_code == 200
+        assert actual == expected
 
         # Planning: event.scheduled goal should return the canned steps list
         planning = {
@@ -56,16 +65,24 @@ def test_reasoning_multipath_grandparent_and_planning():
                     "payload": {
                         "state": "plan",
                         "kind": "plan",
+                        "mode": "planning",
                         "goal": {"predicate": "event.scheduled", "args": {"person": "Dana", "time": "2025-09-06T13:00-07:00"}},
                         "budgets": {"max_depth": 3, "beam": 3, "time_ms": 150}
                     }
                 }
             ]
         }
+        print("\n[Planning] Request:")
+        print(json.dumps(planning, indent=2))
         r = requests.post(BASE + "/v1/obligations/execute", json=planning)
+        print("Status:", r.status_code)
+        resp = r.json()
+        print("Trace clarify:", resp.get("clarify"))
+        print("Final answer:", resp.get("final_answer"))
+        # Ambiguity on person triggers clarify, not steps
         assert r.status_code == 200
-        steps = json.loads(r.json().get("final_answer", "[]"))
-        assert steps == ["ResolvePerson", "CheckCalendar", "ProposeSlots", "CreateEvent"]
+        assert resp.get("final_answer", "") == ""
+        assert "clarify" in resp and "person" in resp["clarify"]
     finally:
         proc.terminate()
         try:

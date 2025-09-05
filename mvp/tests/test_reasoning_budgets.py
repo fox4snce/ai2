@@ -1,8 +1,8 @@
 import json
-import requests
-import time
 import sys
 from subprocess import Popen, PIPE
+import time
+import requests
 
 BASE = "http://127.0.0.1:8000"
 
@@ -19,13 +19,13 @@ def wait_for_server(timeout=10):
     return False
 
 
-def test_reasoning_grandparent_true_and_false():
+def test_budget_truncation_depth_and_time():
     proc = Popen([sys.executable, "-m", "src.api"], stdout=PIPE, stderr=PIPE)
     try:
         assert wait_for_server(), "API server did not start in time"
 
-        # Positive case: Alice -> Bob -> Cara
-        body = {
+        # Depth cap: forbid depth-2 chain by max_depth=1
+        body_depth = {
             "obligations": [
                 {
                     "type": "REPORT",
@@ -38,27 +38,24 @@ def test_reasoning_grandparent_true_and_false():
                             {"predicate": "parentOf", "args": ["Alice", "Bob"]},
                             {"predicate": "parentOf", "args": ["Bob", "Cara"]}
                         ],
-                        "budgets": {"max_depth": 3, "beam": 4, "time_ms": 100}
+                        "budgets": {"max_depth": 1, "beam": 10, "time_ms": 100}
                     }
                 }
             ]
         }
-        print("\n[Deduction: Positive] Request:")
-        print(json.dumps(body, indent=2))
-        r = requests.post(BASE + "/v1/obligations/execute", json=body)
-        print("Status:", r.status_code)
+        r = requests.post(BASE + "/v1/obligations/execute", json=body_depth)
         data = r.json()
-        print("Response trace (truncated): final_answer=", data.get("final_answer"))
-        print("Tool runs:", data.get("tool_runs"))
-        print("Assertions:", data.get("assertions"))
-        expected = "true"
-        actual = data.get("final_answer")
-        print("Expected:", expected, "Actual:", actual)
+        print("Depth status:", r.status_code, "trace status:", data.get("status"))
         assert r.status_code == 200
-        assert actual == expected
+        assert data.get("status") in ("failed", "clarify")  # conductor marks failed on truncated
+        tr = (data.get("tool_runs") or [])[0].get("outputs") or {}
+        metrics = (tr.get("trajectory") or {}).get("metrics") or {}
+        assert tr.get("status") == "truncated"
+        assert metrics.get("depth_used") == 1
+        assert metrics.get("time_ms", 0) >= 0
 
-        # Negative case: no chain
-        body_neg = {
+        # Time cap: simulate slow so we exceed time_ms
+        body_time = {
             "obligations": [
                 {
                     "type": "REPORT",
@@ -66,26 +63,24 @@ def test_reasoning_grandparent_true_and_false():
                         "kind": "logic",
                         "mode": "deduction",
                         "domains": ["kinship"],
-                        "query": {"predicate": "grandparentOf", "args": ["Alice", "Zoe"]},
+                        "query": {"predicate": "grandparentOf", "args": ["Alice", "Cara"]},
                         "facts": [
-                            {"predicate": "parentOf", "args": ["Alice", "Bob"]}
+                            {"predicate": "parentOf", "args": ["Alice", "Bob"]},
+                            {"predicate": "parentOf", "args": ["Bob", "Cara"]}
                         ],
-                        "budgets": {"max_depth": 3, "beam": 4, "time_ms": 100}
+                        "simulate_slow": True,
+                        "budgets": {"max_depth": 3, "beam": 10, "time_ms": 1}
                     }
                 }
             ]
         }
-        print("\n[Deduction: Negative] Request:")
-        print(json.dumps(body_neg, indent=2))
-        r = requests.post(BASE + "/v1/obligations/execute", json=body_neg)
-        print("Status:", r.status_code)
+        r = requests.post(BASE + "/v1/obligations/execute", json=body_time)
         data = r.json()
-        print("Response trace (truncated): final_answer=", data.get("final_answer"))
-        expected = "false"
-        actual = data.get("final_answer")
-        print("Expected:", expected, "Actual:", actual)
-        assert r.status_code == 200
-        assert actual == expected
+        tr = (data.get("tool_runs") or [])[0].get("outputs") or {}
+        metrics = (tr.get("trajectory") or {}).get("metrics") or {}
+        print("Time metrics:", metrics)
+        assert tr.get("status") == "truncated"
+        assert metrics.get("time_ms", 0) >= 1
     finally:
         proc.terminate()
         try:

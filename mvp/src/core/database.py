@@ -43,6 +43,7 @@ class Assertion:
     subject_id: str
     predicate: str
     object: str
+    proof_ref: Optional[str] = None
     confidence: float = 1.0
     valid_from: Optional[datetime] = None
     valid_to: Optional[datetime] = None
@@ -192,14 +193,15 @@ class IRDatabase:
         """Create a new assertion."""
         cursor = self.conn.cursor()
         cursor.execute("""
-            INSERT INTO assertion (id, subject_id, predicate, object, confidence, 
+            INSERT INTO assertion (id, subject_id, predicate, object, proof_ref, confidence, 
                                  valid_from, valid_to, source_id, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             assertion.id,
             assertion.subject_id,
             assertion.predicate,
             assertion.object,
+            assertion.proof_ref,
             assertion.confidence,
             assertion.valid_from.isoformat() if assertion.valid_from else None,
             assertion.valid_to.isoformat() if assertion.valid_to else None,

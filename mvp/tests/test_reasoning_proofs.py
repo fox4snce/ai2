@@ -1,8 +1,8 @@
 import json
-import requests
-import time
 import sys
 from subprocess import Popen, PIPE
+import time
+import requests
 
 BASE = "http://127.0.0.1:8000"
 
@@ -19,12 +19,10 @@ def wait_for_server(timeout=10):
     return False
 
 
-def test_reasoning_grandparent_true_and_false():
+def test_proof_and_provenance():
     proc = Popen([sys.executable, "-m", "src.api"], stdout=PIPE, stderr=PIPE)
     try:
         assert wait_for_server(), "API server did not start in time"
-
-        # Positive case: Alice -> Bob -> Cara
         body = {
             "obligations": [
                 {
@@ -43,21 +41,20 @@ def test_reasoning_grandparent_true_and_false():
                 }
             ]
         }
-        print("\n[Deduction: Positive] Request:")
-        print(json.dumps(body, indent=2))
         r = requests.post(BASE + "/v1/obligations/execute", json=body)
         print("Status:", r.status_code)
         data = r.json()
-        print("Response trace (truncated): final_answer=", data.get("final_answer"))
-        print("Tool runs:", data.get("tool_runs"))
-        print("Assertions:", data.get("assertions"))
-        expected = "true"
-        actual = data.get("final_answer")
-        print("Expected:", expected, "Actual:", actual)
+        print("Trace capabilities:", data.get("capabilities_satisfied"))
+        tool_runs = data.get("tool_runs", [])
+        assertions = data.get("assertions", [])
+        print("Assertions:", assertions)
         assert r.status_code == 200
-        assert actual == expected
+        assert data.get("final_answer") == "true"
+        # proof_ref is trajectory id, and source is Reasoning.Core@...
+        assert any(a.get("proof_ref", "").startswith("T_OB_") for a in assertions)
+        assert any(a.get("source_id", "").startswith("Reasoning.Core@") for a in assertions)
 
-        # Negative case: no chain
+        # negative: write no assertions
         body_neg = {
             "obligations": [
                 {
@@ -75,17 +72,14 @@ def test_reasoning_grandparent_true_and_false():
                 }
             ]
         }
-        print("\n[Deduction: Negative] Request:")
-        print(json.dumps(body_neg, indent=2))
         r = requests.post(BASE + "/v1/obligations/execute", json=body_neg)
-        print("Status:", r.status_code)
+        print("Neg Status:", r.status_code)
         data = r.json()
-        print("Response trace (truncated): final_answer=", data.get("final_answer"))
-        expected = "false"
-        actual = data.get("final_answer")
-        print("Expected:", expected, "Actual:", actual)
+        print("Neg Assertions:", data.get("assertions"))
         assert r.status_code == 200
-        assert actual == expected
+        assert data.get("final_answer") == "false"
+        # assert no new assertions for negative
+        assert len(data.get("assertions", [])) == 0
     finally:
         proc.terminate()
         try:

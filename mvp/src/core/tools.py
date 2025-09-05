@@ -334,40 +334,95 @@ class ToolExecutor:
         # enforce hard caps (no real search in stub)
         mode = inputs.get("mode")
         if mode == "deduction":
+            # boundary checks: query/facts types
+            query = inputs.get("query", {})
+            if not isinstance(query, dict):
+                return {"error": "invalid_query_type"}
+            facts = inputs.get("facts", [])
+            if not isinstance(facts, list):
+                return {"error": "invalid_facts_type"}
+            # require either rules or domains to be present
+            rules = inputs.get("rules", []) or []
+            domains = inputs.get("domains", []) or []
+            if len(rules) == 0 and len(domains) == 0:
+                return {"error": "no_rules_or_domains"}
             query = inputs.get("query", {})
             pred = (query or {}).get("predicate")
             args = (query or {}).get("args", [])
+            # domain/type enforcement
+            if not isinstance(args, list) or any(not isinstance(a, str) for a in args):
+                return {"error": "type_mismatch"}
+            # timers/metrics
+            import time as _t
+            t0 = _t.time()
             if pred == "grandparentOf" and len(args) == 2:
                 # toy facts from inputs
-                facts = inputs.get("facts", [])
                 x, z = args[0], args[1]
-                # look for Y such that parentOf(X,Y) and parentOf(Y,Z)
-                y_candidates = set()
+                # build edge set for parentOf
+                edges = []
                 for f in facts:
-                    if f.get("predicate") == "parentOf" and f.get("args", [None, None])[0] == x:
-                        y_candidates.add(f.get("args")[1])
+                    if f.get("predicate") == "parentOf" and isinstance(f.get("args"), list) and len(f.get("args")) == 2:
+                        edges.append((f.get("args")[0], f.get("args")[1]))
+                y_candidates = sorted([y for (a, y) in edges if a == x])
+                # If a chain is theoretically possible but depth cap prevents it, truncate early
+                if budgets.get("max_depth") is not None and int(budgets.get("max_depth")) < 2:
+                    if any((y, z) in edges for y in y_candidates):
+                        dt = int((_t.time() - t0) * 1000)
+                        return {"status": "truncated", "kind": "logic.answer", "value": None, "trajectory": {"steps": [], "alt_paths": [], "metrics": {"depth_used": 1, "nodes_expanded": 0, "time_ms": dt}}, "capabilities_satisfied": ["REPORT.logic"]}
+                steps = []
+                alt_paths = []
+                found = False
+                nodes = 0
                 for y in y_candidates:
-                    for f in facts:
-                        if f.get("predicate") == "parentOf" and f.get("args", [None, None])[0] == y and f.get("args")[1] == z:
-                            steps = [{"op": "infer", "rule": "parent∘parent→grandparent", "bindings": {"X": x, "Y": y, "Z": z}}]
-                            return {
-                                "kind": "logic.answer",
-                                "value": True,
-                                "trajectory": {"steps": steps, "metrics": {"depth_used": 1, "nodes_expanded": 2}},
-                                "assertions": [{"subject": f"{x}", "predicate": "grandparentOf", "object": f"{z}", "proof_ref": "local"}]
-                            }
-                return {"kind": "logic.answer", "value": False, "trajectory": {"steps": [], "metrics": {"depth_used": 1}}}
+                    nodes += 1
+                    # budget checks (beam, depth, time)
+                    if budgets.get("beam") is not None and nodes > int(budgets.get("beam")):
+                        dt = int((_t.time() - t0) * 1000)
+                        return {"status": "truncated", "kind": "logic.answer", "value": None, "trajectory": {"steps": steps, "alt_paths": alt_paths, "metrics": {"depth_used": 1, "nodes_expanded": nodes, "time_ms": dt}}, "capabilities_satisfied": ["REPORT.logic"]}
+                    if budgets.get("max_depth") is not None and int(budgets.get("max_depth")) < 2:
+                        dt = int((_t.time() - t0) * 1000)
+                        return {"status": "truncated", "kind": "logic.answer", "value": None, "trajectory": {"steps": steps, "alt_paths": alt_paths, "metrics": {"depth_used": 1, "nodes_expanded": nodes, "time_ms": dt}}, "capabilities_satisfied": ["REPORT.logic"]}
+                    if budgets.get("time_ms") is not None:
+                        if inputs.get("simulate_slow"):
+                            _t.sleep(int(budgets.get("time_ms")) / 1000.0 + 0.001)
+                        if int((_t.time() - t0) * 1000) > int(budgets.get("time_ms")):
+                            dt = int((_t.time() - t0) * 1000)
+                            return {"status": "truncated", "kind": "logic.answer", "value": None, "trajectory": {"steps": steps, "alt_paths": alt_paths, "metrics": {"depth_used": 1, "nodes_expanded": nodes, "time_ms": dt}}, "capabilities_satisfied": ["REPORT.logic"]}
+                    if (y, z) in edges:
+                        st = {"op": "infer", "rule": "parent∘parent→grandparent", "bindings": {"X": x, "Y": y, "Z": z}}
+                        (steps if not found else alt_paths).append(st)
+                        found = True
+                if found:
+                    dt = int((_t.time() - t0) * 1000)
+                    traj = {"steps": steps, "alt_paths": alt_paths, "metrics": {"depth_used": 1, "nodes_expanded": nodes, "time_ms": dt}, "rules_fired": [s["rule"] for s in steps], "why_not": []}
+                    return {
+                        "kind": "logic.answer",
+                        "value": True,
+                        "trajectory": traj,
+                        "assertions": [{"subject": f"{x}", "predicate": "grandparentOf", "object": f"{z}", "proof_ref": "local"}],
+                        "capabilities_satisfied": ["REPORT.logic"]
+                    }
+                dt = int((_t.time() - t0) * 1000)
+                return {"kind": "logic.answer", "value": False, "trajectory": {"steps": [], "metrics": {"depth_used": 1, "nodes_expanded": nodes, "time_ms": dt}, "rules_fired": [], "why_not": ["no_chain_found"]}, "capabilities_satisfied": ["REPORT.logic"]}
             return {"error": "unsupported_query"}
         elif mode == "planning":
             goal = inputs.get("goal", {})
             pred = (goal or {}).get("predicate")
             if pred == "event.scheduled":
                 steps = ["ResolvePerson", "CheckCalendar", "ProposeSlots", "CreateEvent"]
-                return {
+                # do not write assertions; plan only
+                result = {
                     "kind": "plan",
-                    "trajectory": {"steps": steps, "metrics": {"depth_used": 1, "beam_used": 1}},
-                    "feasible": True
+                    "trajectory": {"steps": steps, "metrics": {"depth_used": 1, "beam_used": 1, "time_ms": 0}},
+                    "feasible": True,
+                    "capabilities_satisfied": ["ACHIEVE.plan"]
                 }
+                # simple ambiguity check (stub): if person ambiguous, request clarify
+                args = (goal or {}).get("args", {})
+                person = args.get("person")
+                if person in ("Dana", "Alex"):
+                    result["clarify"] = "person"
+                return result
             return {"error": "unsupported_goal"}
         return {"error": "mode_required"}
 

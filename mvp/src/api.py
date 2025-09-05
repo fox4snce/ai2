@@ -34,15 +34,22 @@ def classify_status(trace: Dict[str, Any]) -> int:
     if status == "resolved":
         return 200
     if status == "failed":
-        # Differentiate no tool vs crash by inspecting tool_runs and message
+        # Differentiate no tool vs crash vs truncated budget
         err = trace.get("final_answer", "")
-        if "No tools available" in err or "No suitable tool" in err:
-            return 422
         # Inspect tool_runs
+        truncated = False
         for tr in trace.get("tool_runs", []):
+            out = (tr or {}).get("outputs") or {}
+            if (out or {}).get("status") == "truncated":
+                truncated = True
+                break
             e = (tr or {}).get("error") or ""
             if "No tools available" in e or "No suitable tool" in e:
                 return 422
+        if truncated:
+            return 200
+        if "No tools available" in err or "No suitable tool" in err:
+            return 422
         return 500
     # default OK if not provided
     return 200
