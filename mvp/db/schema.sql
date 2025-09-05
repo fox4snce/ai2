@@ -36,6 +36,7 @@ CREATE TABLE assertion (
     subject_id VARCHAR(50) NOT NULL,
     predicate VARCHAR(100) NOT NULL,
     object TEXT NOT NULL,
+    rule_version TEXT,
     proof_ref VARCHAR(50),
     confidence DECIMAL(3,2) DEFAULT 1.0 CHECK (confidence >= 0 AND confidence <= 1),
     valid_from TIMESTAMP DEFAULT CURRENT_TIMESTAMP,

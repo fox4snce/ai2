@@ -11,15 +11,12 @@ import os
 from unittest.mock import Mock, patch
 
 # Import the components to test
-import sys
-sys.path.append('src')
-
-from core.database import IRDatabase, Entity, Relation, Assertion, Event, Source, Obligation, ToolRun
-from core.obligations import ObligationParser, ObligationValidator, ObligationBuilder
-from core.tools import ToolRegistry, ToolExecutor, ToolContract
-from conductor.conductor import Conductor, ExecutionResult, VerificationResult
-from translators.translators import TranslatorManager, MockLLM, TranslatorIn, TranslatorOut
-from main import MVPRequestHandler, MVPAPI
+from src.core.database import IRDatabase, Entity, Relation, Assertion, Event, Source, Obligation, ToolRun
+from src.core.obligations import ObligationParser, ObligationValidator, ObligationBuilder
+from src.core.tools import ToolRegistry, ToolExecutor, ToolContract
+from src.conductor.conductor import Conductor, ExecutionResult, VerificationResult
+from src.translators.translators import TranslatorManager, MockLLM, TranslatorIn, TranslatorOut
+from src.main import MVPRequestHandler, MVPAPI
 
 
 # --- small reporting helper for explicit expected vs actual in console ---
@@ -329,7 +326,7 @@ class TestMVPIntegration:
         """CLARIFY path then resolve name and answer."""
         # No name stored yet → expect clarify
         # Call deterministic obligations API
-        from main import MVPAPI
+        from src.main import MVPAPI
         api = MVPAPI()
         trace1 = api.execute_obligations({
             "obligations": [

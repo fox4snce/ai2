@@ -43,6 +43,7 @@ class Assertion:
     subject_id: str
     predicate: str
     object: str
+    rule_version: Optional[str] = None
     proof_ref: Optional[str] = None
     confidence: float = 1.0
     valid_from: Optional[datetime] = None
@@ -193,14 +194,15 @@ class IRDatabase:
         """Create a new assertion."""
         cursor = self.conn.cursor()
         cursor.execute("""
-            INSERT INTO assertion (id, subject_id, predicate, object, proof_ref, confidence, 
+            INSERT INTO assertion (id, subject_id, predicate, object, rule_version, proof_ref, confidence, 
                                  valid_from, valid_to, source_id, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             assertion.id,
             assertion.subject_id,
             assertion.predicate,
             assertion.object,
+            assertion.rule_version,
             assertion.proof_ref,
             assertion.confidence,
             assertion.valid_from.isoformat() if assertion.valid_from else None,
@@ -338,6 +340,8 @@ class IRDatabase:
                 subject_id=row["subject_id"],
                 predicate=row["predicate"],
                 object=row["object"],
+                rule_version=row["rule_version"] if "rule_version" in row.keys() else None,
+                proof_ref=row["proof_ref"] if "proof_ref" in row.keys() else None,
                 confidence=row["confidence"],
                 valid_from=datetime.fromisoformat(row["valid_from"]) if row["valid_from"] else None,
                 valid_to=datetime.fromisoformat(row["valid_to"]) if row["valid_to"] else None,

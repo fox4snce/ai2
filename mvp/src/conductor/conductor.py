@@ -539,6 +539,7 @@ class Conductor:
                         subject_id=str(subject),
                         predicate=str(predicate),
                         object=str(obj),
+                        rule_version=a.get("rule_version"),
                         proof_ref=proof_tid,
                         confidence=1.0,
                         source_id=f"Reasoning.Core@0.1.0"
@@ -677,6 +678,7 @@ class Conductor:
             "subject_id": assertion.subject_id,
             "predicate": assertion.predicate,
             "object": assertion.object,
+            "rule_version": getattr(assertion, "rule_version", None),
             "proof_ref": getattr(assertion, "proof_ref", None),
             "source_id": assertion.source_id,
             "confidence": assertion.confidence

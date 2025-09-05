@@ -1,0 +1,17 @@
+capabilities:
+  safe:
+    net: false
+    fs: false
+    subprocess: false
+  io:
+    fs: true
+    allowed_paths: ["/tmp", "C:/Temp"]
+  net:
+    net: true
+    allowed_hosts: ["api.example.com"]
+  privileged:
+    net: true
+    fs: true
+    subprocess: true
+secrets:
+  vault: env

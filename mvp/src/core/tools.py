@@ -253,6 +253,7 @@ class ToolExecutor:
         self.registry = registry
         self.tool_implementations = {}
         self._load_tool_implementations()
+        self._load_sandbox_policy()
     
     def _load_tool_implementations(self):
         """Load tool implementations."""
@@ -266,6 +267,18 @@ class ToolExecutor:
             "Prep.Stub": self._mock_prep_stub,
             "GuardrailChecker": self._mock_guardrail_checker
         }
+
+    def _load_sandbox_policy(self):
+        try:
+            base_dir = Path(__file__).resolve().parents[2]
+            policy_path = base_dir / "policies" / "sandbox.yaml"
+            if policy_path.exists():
+                with open(policy_path, "r") as f:
+                    self.sandbox = yaml.safe_load(f) or {}
+            else:
+                self.sandbox = {"capabilities": {"safe": {}}, "secrets": {"vault": "env"}}
+        except Exception:
+            self.sandbox = {"capabilities": {"safe": {}}, "secrets": {"vault": "env"}}
     
     def execute_tool(self, tool_name: str, inputs: Dict) -> Dict:
         """Execute a tool with given inputs."""
@@ -273,6 +286,14 @@ class ToolExecutor:
             return {"error": f"Tool {tool_name} not implemented"}
         
         try:
+            # Sandbox enforcement
+            tool = self.registry.get_tool(tool_name)
+            tier = getattr(tool, "capability_tier", "safe") if tool else "safe"
+            caps = (self.sandbox.get("capabilities", {}) or {}).get(tier, {})
+            # Simple deny logic example: net disallowed but inputs ask for net
+            if caps is not None and caps.get("net") is False and inputs.get("requires_net"):
+                return {"error": "capability_denied", "why_not": ["capability_denied"]}
+
             tool_func = self.tool_implementations[tool_name]
             result = tool_func(inputs)
             return result
@@ -441,11 +462,13 @@ class ToolExecutor:
                 if found:
                     dt = int((_t.time() - t0) * 1000)
                     traj = {"steps": steps, "alt_paths": alt_paths, "metrics": {"depth_used": 1, "nodes_expanded": nodes, "time_ms": dt}, "rules_fired": [s["rule"] for s in steps], "why_not": []}
+                    # attach rule_version to assertions (simple stub uses @1)
+                    rv = f"{steps[0]['rule']}@1" if steps else None
                     return {
                         "kind": "logic.answer",
                         "value": True,
                         "trajectory": traj,
-                        "assertions": [{"subject": f"{x}", "predicate": "grandparentOf", "object": f"{z}", "proof_ref": "local"}],
+                        "assertions": [{"subject": f"{x}", "predicate": "grandparentOf", "object": f"{z}", "proof_ref": "local", "rule_version": rv}],
                         "capabilities_satisfied": ["REPORT.logic"]
                     }
                 dt = int((_t.time() - t0) * 1000)
