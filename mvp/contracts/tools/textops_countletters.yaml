@@ -1,0 +1,36 @@
+name: TextOps.CountLetters
+description: Counts occurrences of letters in text
+version: 1.0.0
+consumes:
+  - kind: query.count
+    schema:
+      type: object
+      properties:
+        letter:
+          type: string
+          maxLength: 1
+          description: Single letter to count
+        word:
+          type: string
+          description: Text to search in
+      required: [letter, word]
+produces:
+  - assertion:
+      subject: Text
+      predicate: containsLetterCount
+      object: number
+satisfies:
+  - REPORT(query.count)
+  - VERIFY(answer.count)
+preconditions:
+  - letter_is_single_char
+  - word_is_non_empty
+postconditions:
+  - count_is_non_negative
+cost: tiny
+reliability: high
+latency_ms: 2
+verify_mode: non_blocking
+implementation:
+  type: python
+  entry_point: textops.count_letters

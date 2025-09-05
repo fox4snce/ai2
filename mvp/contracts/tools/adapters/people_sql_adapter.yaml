@@ -1,0 +1,43 @@
+adapter_for: PeopleSQL
+description: Maps generic IR filters to SQL WHERE clauses
+version: 1.0.0
+maps:
+  filters:
+    - from:
+        is_friend: "user"
+      to:
+        relation: "friend"
+        target: "user"
+    - from:
+        city: "<X>"
+      to:
+        location: "<X>"
+    - from:
+        name: "<X>"
+      to:
+        name: "<X>"
+    - from:
+        age: "<X>"
+      to:
+        age: "<X>"
+    - from:
+        occupation: "<X>"
+      to:
+        occupation: "<X>"
+sql_template: |
+  SELECT p.*, r.rel_type, r.dst_id
+  FROM people p
+  LEFT JOIN relations r ON p.id = r.src_id
+  WHERE {conditions}
+  GROUP BY p.id
+condition_builders:
+  friend:
+    template: "r.rel_type = 'friend' AND r.dst_id = '{target}'"
+  location:
+    template: "p.city = '{location}'"
+  name:
+    template: "p.name ILIKE '%{name}%'"
+  age:
+    template: "p.age = {age}"
+  occupation:
+    template: "p.occupation ILIKE '%{occupation}%'"

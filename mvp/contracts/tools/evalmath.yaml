@@ -1,0 +1,31 @@
+name: EvalMath
+description: Evaluates mathematical expressions deterministically
+version: 1.0.0
+consumes:
+  - kind: query.math
+    schema:
+      type: object
+      properties:
+        expr:
+          type: string
+          description: Mathematical expression to evaluate
+      required: [expr]
+produces:
+  - assertion:
+      subject: Expression
+      predicate: evaluatesTo
+      object: number
+satisfies:
+  - REPORT(query.math)
+  - VERIFY(answer.math)
+preconditions:
+  - expr_parses
+postconditions:
+  - result_is_number
+cost: tiny
+reliability: high
+latency_ms: 5
+verify_mode: non_blocking
+implementation:
+  type: python
+  entry_point: evalmath.evaluate

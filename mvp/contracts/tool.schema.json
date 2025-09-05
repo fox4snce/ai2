@@ -1,0 +1,180 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Tool Contract Schema",
+  "description": "Schema for defining tool capabilities and contracts",
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "Unique tool identifier"
+    },
+    "description": {
+      "type": "string",
+      "description": "Human-readable tool description"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$",
+      "description": "Semantic version"
+    },
+    "consumes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "description": "Input type identifier"
+          },
+          "schema": {
+            "type": "object",
+            "description": "JSON schema for input validation"
+          },
+          "required": {
+            "type": "boolean",
+            "default": true
+          }
+        },
+        "required": ["kind", "schema"],
+        "additionalProperties": false
+      }
+    },
+    "produces": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "assertion": {
+            "type": "object",
+            "properties": {
+              "subject": {"type": "string"},
+              "predicate": {"type": "string"},
+              "object": {"type": "string"}
+            },
+            "required": ["subject", "predicate", "object"]
+          },
+          "event": {
+            "type": "object",
+            "description": "Event type this tool can generate"
+          },
+          "source": {
+            "type": "object",
+            "description": "Source metadata this tool provides"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "satisfies": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "description": "Obligation types this tool can satisfy"
+      }
+    },
+    "preconditions": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "description": "Conditions that must be true before execution"
+      }
+    },
+    "postconditions": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "description": "Conditions that will be true after successful execution"
+      }
+    },
+    "cost": {
+      "type": "string",
+      "enum": ["tiny", "low", "medium", "high"],
+      "default": "medium"
+    },
+    "reliability": {
+      "type": "string",
+      "enum": ["low", "medium", "high"],
+      "default": "medium"
+    },
+    "latency_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Expected execution time in milliseconds"
+    },
+    "verify_mode": {
+      "type": "string",
+      "enum": ["off", "non_blocking", "blocking"],
+      "description": "Verification behavior for this tool",
+      "default": "blocking"
+    },
+    "auth_required": {
+      "type": "boolean",
+      "default": false
+    },
+    "scopes": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Required permission scopes"
+    },
+    "implementation": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["python", "javascript", "sql", "external_api", "builtin"]
+        },
+        "entry_point": {"type": "string"},
+        "config": {"type": "object"}
+      },
+      "required": ["type"],
+      "additionalProperties": false
+    }
+  },
+  "required": ["name", "consumes", "produces", "satisfies"],
+  "additionalProperties": false,
+  "examples": [
+    {
+      "name": "EvalMath",
+      "description": "Evaluates mathematical expressions",
+      "version": "1.0.0",
+      "consumes": [
+        {
+          "kind": "query.math",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "expr": {"type": "string"}
+            },
+            "required": ["expr"]
+          }
+        }
+      ],
+      "produces": [
+        {
+          "assertion": {
+            "subject": "Expression",
+            "predicate": "evaluatesTo",
+            "object": "number"
+          }
+        }
+      ],
+      "satisfies": [
+        "REPORT(query.math)",
+        "VERIFY(answer.math)"
+      ],
+      "preconditions": [
+        "expr_parses"
+      ],
+      "postconditions": [
+        "result_is_number"
+      ],
+      "cost": "tiny",
+      "reliability": "high",
+      "latency_ms": 5,
+      "implementation": {
+        "type": "python",
+        "entry_point": "evalmath.evaluate"
+      }
+    }
+  ]
+}

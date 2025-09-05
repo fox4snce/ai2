@@ -1,0 +1,196 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Obligation Grammar Schema",
+  "description": "Schema for translating natural language to structured obligations",
+  "type": "object",
+  "properties": {
+    "obligations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "REPORT",
+              "ACHIEVE", 
+              "MAINTAIN",
+              "AVOID",
+              "JUSTIFY",
+              "SCHEDULE",
+              "CLARIFY",
+              "VERIFY",
+              "DISCOVER_OP"
+            ]
+          },
+          "payload": {
+            "type": "object",
+            "description": "Type-specific payload structure"
+          }
+        },
+        "required": ["type", "payload"],
+        "additionalProperties": false
+      },
+      "minItems": 1
+    }
+  },
+  "required": ["obligations"],
+  "additionalProperties": false,
+  "definitions": {
+    "reportPayload": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "math",
+            "count",
+            "status",
+            "logic",
+            "plan",
+            "query.people",
+            "query.documents",
+            "schedule",
+            "time"
+          ]
+        },
+        "expr": {"type": "string"},
+        "field": {"type": "string"},
+        "filters": {
+          "type": "array",
+          "items": {"type": "object"}
+        },
+        "letter": {"type": "string"},
+        "word": {"type": "string"}
+      },
+      "required": ["kind"],
+      "additionalProperties": false
+    },
+    "achievePayload": {
+      "type": "object",
+      "properties": {
+        "state": {"type": "string"},
+        "event": {"type": "object"},
+        "condition": {"type": "string"},
+        "kind": {"type": "string"},
+        "goal": {"type": "object"}
+      },
+      "required": ["state"],
+      "additionalProperties": false
+    },
+    "maintainPayload": {
+      "type": "object",
+      "properties": {
+        "pred": {"type": "string"},
+        "args": {"type": "object"},
+        "duration": {"type": "string"}
+      },
+      "required": ["pred"],
+      "additionalProperties": false
+    },
+    "avoidPayload": {
+      "type": "object",
+      "properties": {
+        "pred": {"type": "string"},
+        "args": {"type": "object"},
+        "duration": {"type": "string"}
+      },
+      "required": ["pred"],
+      "additionalProperties": false
+    },
+    "justifyPayload": {
+      "type": "object",
+      "properties": {
+        "claim": {"type": "string"},
+        "evidence": {"type": "array"},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1}
+      },
+      "required": ["claim"],
+      "additionalProperties": false
+    },
+    "schedulePayload": {
+      "type": "object",
+      "properties": {
+        "event": {"type": "object"},
+        "time": {"type": "string"},
+        "timezone": {"type": "string"}
+      },
+      "required": ["event", "time"],
+      "additionalProperties": false
+    },
+    "clarifyPayload": {
+      "type": "object",
+      "properties": {
+        "slot": {"type": "string"},
+        "context": {"type": "string"},
+        "options": {"type": "array"}
+      },
+      "required": ["slot"],
+      "additionalProperties": false
+    },
+    "verifyPayload": {
+      "type": "object",
+      "properties": {
+        "target": {"type": "string"},
+        "method": {"type": "string"},
+        "threshold": {"type": "number", "minimum": 0, "maximum": 1}
+      },
+      "required": ["target"],
+      "additionalProperties": false
+    },
+    "discoverOpPayload": {
+      "type": "object",
+      "properties": {
+        "goal": {"type": "string"},
+        "domain": {"type": "string"},
+        "constraints": {"type": "object"}
+      },
+      "required": ["goal"],
+      "additionalProperties": false
+    }
+  },
+  "examples": [
+    {
+      "obligations": [
+        {
+          "type": "REPORT",
+          "payload": {
+            "kind": "math",
+            "expr": "2+2"
+          }
+        },
+        {
+          "type": "VERIFY",
+          "payload": {
+            "target": "last_answer"
+          }
+        }
+      ]
+    },
+    {
+      "obligations": [
+        {
+          "type": "REPORT",
+          "payload": {
+            "kind": "query.people",
+            "filters": [
+              {"is_friend": "user"},
+              {"city": "Seattle"}
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "obligations": [
+        {
+          "type": "MAINTAIN",
+          "payload": {
+            "pred": "ball.within_radius",
+            "args": {"r": 0.1}
+          }
+        }
+      ]
+    }
+  ]
+}

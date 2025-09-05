@@ -1,0 +1,39 @@
+name: PeopleSQL
+description: Queries people database with SQL-like filters
+version: 1.0.0
+consumes:
+  - kind: query.people
+    schema:
+      type: object
+      properties:
+        filters:
+          type: array
+          items:
+            type: object
+            description: Filter conditions
+          description: Array of filter conditions
+      required: [filters]
+produces:
+  - assertion:
+      subject: Person
+      predicate: matchesQuery
+      object: boolean
+  - event:
+      type: query_result
+      description: Query execution event
+satisfies:
+  - REPORT(query.people)
+  - VERIFY(answer.people)
+preconditions:
+  - filters_are_valid
+  - database_accessible
+postconditions:
+  - results_are_persons
+  - results_match_filters
+cost: low
+reliability: high
+latency_ms: 50
+verify_mode: non_blocking
+implementation:
+  type: sql
+  entry_point: people_sql.query

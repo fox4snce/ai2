@@ -1,0 +1,398 @@
+"""
+Tool registry and contract management.
+
+This module handles tool registration, contract validation,
+and tool selection based on obligations.
+"""
+
+import json
+import yaml
+import jsonschema
+from typing import Dict, List, Optional, Any, Tuple
+from dataclasses import dataclass
+from pathlib import Path
+import logging
+import os
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ToolContract:
+    """Represents a tool contract."""
+    name: str
+    description: str
+    version: str
+    consumes: List[Dict]
+    produces: List[Dict]
+    satisfies: List[str]
+    preconditions: List[str]
+    postconditions: List[str]
+    cost: str
+    reliability: str
+    latency_ms: int
+    verify_mode: str = "blocking"
+    auth_required: bool = False
+    scopes: List[str] = None
+    implementation: Dict = None
+    
+    def __post_init__(self):
+        if self.scopes is None:
+            self.scopes = []
+        if self.implementation is None:
+            self.implementation = {}
+
+
+class ToolRegistry:
+    """Registry for managing tool contracts."""
+    
+    def __init__(self, contracts_dir: str = None, fail_on_schema_error: bool = True):
+        """Initialize registry with contracts directory."""
+        if contracts_dir is None:
+            # Resolve to repo root/mvp/contracts/tools relative to this file
+            base_dir = Path(__file__).resolve().parents[2]
+            self.contracts_dir = base_dir / "contracts" / "tools"
+        else:
+            self.contracts_dir = Path(contracts_dir)
+        self.tools: Dict[str, ToolContract] = {}
+        self.fail_on_schema_error = fail_on_schema_error
+        self.schema = self._load_tool_schema()
+        self._load_tools()
+    
+    def _load_tool_schema(self) -> Dict:
+        """Load tool contract schema."""
+        base_dir = Path(__file__).resolve().parents[2]
+        schema_path = base_dir / "contracts" / "tool.schema.json"
+        with open(schema_path, "r") as f:
+            return json.load(f)
+    
+    def _load_tools(self):
+        """Load all tool contracts from directory (recursively)."""
+        if not self.contracts_dir.exists():
+            logger.warning(f"Contracts directory {self.contracts_dir} does not exist")
+            return
+        
+        # Support both .yaml and .yml, recursively
+        yaml_paths = list(self.contracts_dir.rglob("*.yaml")) + list(self.contracts_dir.rglob("*.yml"))
+        
+        for yaml_file in yaml_paths:
+            # Skip adapters or non-tool specs by path
+            if any(part.lower() == "adapters" for part in yaml_file.parts):
+                logger.info(f"Skipping adapter/non-tool spec: {yaml_file}")
+                continue
+            try:
+                tool_contract = self._load_tool_contract(yaml_file)
+                self.tools[tool_contract.name] = tool_contract
+                logger.info(f"Loaded tool: {tool_contract.name} from {yaml_file}")
+            except Exception as e:
+                logger.error(f"Failed to load tool from {yaml_file}: {e}")
+                if self.fail_on_schema_error and not bool(os.getenv("ALLOW_TOOL_CONTRACT_ERRORS", "")):
+                    raise
+    
+    def _load_tool_contract(self, yaml_file: Path) -> ToolContract:
+        """Load a single tool contract from YAML file."""
+        with open(yaml_file, "r") as f:
+            data = yaml.safe_load(f)
+        
+        # Validate against schema
+        try:
+            jsonschema.validate(data, self.schema)
+        except jsonschema.ValidationError as e:
+            raise ValueError(f"Invalid tool contract in {yaml_file}: {e.message}")
+        
+        return ToolContract(
+            name=data["name"],
+            description=data.get("description", ""),
+            version=data.get("version", "1.0.0"),
+            consumes=data["consumes"],
+            produces=data["produces"],
+            satisfies=data["satisfies"],
+            preconditions=data.get("preconditions", []),
+            postconditions=data.get("postconditions", []),
+            cost=data.get("cost", "medium"),
+            reliability=data.get("reliability", "medium"),
+            latency_ms=data.get("latency_ms", 100),
+            verify_mode=data.get("verify_mode", "blocking"),
+            auth_required=data.get("auth_required", False),
+            scopes=data.get("scopes", []),
+            implementation=data.get("implementation", {})
+        )
+    
+    def get_tool(self, name: str) -> Optional[ToolContract]:
+        """Get tool contract by name."""
+        return self.tools.get(name)
+    
+    def list_tools(self) -> List[str]:
+        """List all registered tool names."""
+        return list(self.tools.keys())
+    
+    def find_tools_for_obligation(self, obligation_type: str) -> List[ToolContract]:
+        """Find tools that can satisfy an obligation type."""
+        matching_tools = []
+        for tool in self.tools.values():
+            for satisfies_pattern in tool.satisfies:
+                # Handle pattern matching for REPORT(query.math) -> REPORT with kind=math
+                if self._matches_obligation_pattern(obligation_type, satisfies_pattern, tool):
+                    matching_tools.append(tool)
+                    break
+        return matching_tools
+    
+    def _matches_obligation_pattern(self, obligation_type: str, satisfies_pattern: str, tool: ToolContract) -> bool:
+        """Check if obligation type matches a satisfies pattern."""
+        # Direct match
+        if obligation_type == satisfies_pattern:
+            return True
+        
+        # Pattern matching for REPORT(query.X)
+        if satisfies_pattern.startswith("REPORT(") and satisfies_pattern.endswith(")"):
+            pattern_content = satisfies_pattern[7:-1]  # Remove "REPORT(" and ")"
+            if obligation_type == "REPORT":
+                for input_spec in tool.consumes:
+                    if input_spec.get("kind") == pattern_content:
+                        return True
+        # Pattern matching for ACHIEVE(plan.X)
+        if satisfies_pattern.startswith("ACHIEVE(") and satisfies_pattern.endswith(")"):
+            pattern_content = satisfies_pattern[8:-1]  # Remove "ACHIEVE(" and ")"
+            if obligation_type == "ACHIEVE":
+                for input_spec in tool.consumes:
+                    if input_spec.get("kind") == pattern_content:
+                        return True
+        
+        return False
+    
+    def validate_tool_inputs(self, tool: ToolContract, obligation_payload: Dict) -> Tuple[bool, str]:
+        """Validate that tool can handle the given inputs."""
+        # If any of the declared input kinds are satisfied, accept (OR semantics for MVP)
+        reasons = []
+        for input_spec in tool.consumes:
+            input_kind = input_spec["kind"]
+            if self._payload_provides_input(input_kind, obligation_payload):
+                return True, "Inputs satisfied"
+            else:
+                reasons.append(f"missing {input_kind}")
+        return False, ", ".join(reasons) or "No matching inputs"
+    
+    def _payload_provides_input(self, input_kind: str, payload: Dict) -> bool:
+        """Check if payload provides the required input kind."""
+        if input_kind == "query.math":
+            return payload.get("kind") == "math" and "expr" in payload
+        elif input_kind == "query.people":
+            return payload.get("kind") == "query.people" and "filters" in payload
+        elif input_kind == "query.count":
+            return payload.get("kind") == "count" and "letter" in payload and "word" in payload
+        elif input_kind == "query.status":
+            return payload.get("kind") == "status" and "field" in payload
+        elif input_kind == "query.logic":
+            return payload.get("kind") == "logic" and isinstance(payload.get("query"), dict)
+        elif input_kind == "plan.goal":
+            # ACHIEVE with planning goal
+            return (payload.get("kind") == "plan" and isinstance(payload.get("goal"), dict)) or (
+                payload.get("state") == "plan" and isinstance(payload.get("goal"), dict)
+            )
+        else:
+            # Generic check
+            return input_kind in payload or f"query.{input_kind}" in payload.get("kind", "")
+    
+    def select_best_tool(self, obligation_type: str, obligation_payload: Dict) -> Optional[ToolContract]:
+        """Select the best tool for an obligation using the policy."""
+        candidates = self.find_tools_for_obligation(obligation_type)
+        
+        if not candidates:
+            return None
+        
+        # Filter candidates that can handle the inputs
+        valid_candidates = []
+        for tool in candidates:
+            can_handle, reason = self.validate_tool_inputs(tool, obligation_payload)
+            if can_handle:
+                valid_candidates.append(tool)
+            else:
+                logger.debug(f"Tool {tool.name} cannot handle inputs: {reason}")
+        
+        if not valid_candidates:
+            return None
+        
+        # Select by policy: reliability > cost > latency > alphabetical
+        def tool_score(tool: ToolContract) -> Tuple[int, int, int, str]:
+            reliability_score = {"high": 3, "medium": 2, "low": 1}[tool.reliability]
+            cost_score = {"tiny": 4, "low": 3, "medium": 2, "high": 1}[tool.cost]
+            latency_score = 1000 / max(tool.latency_ms, 1)  # Higher is better
+            return (reliability_score, cost_score, latency_score, tool.name)
+        
+        return max(valid_candidates, key=tool_score)
+
+
+class ToolExecutor:
+    """Executes tools and manages their lifecycle."""
+    
+    def __init__(self, registry: ToolRegistry):
+        """Initialize with tool registry."""
+        self.registry = registry
+        self.tool_implementations = {}
+        self._load_tool_implementations()
+    
+    def _load_tool_implementations(self):
+        """Load tool implementations."""
+        # This would normally load actual tool implementations
+        # For MVP, we'll create mock implementations
+        self.tool_implementations = {
+            "EvalMath": self._mock_evalmath,
+            "TextOps.CountLetters": self._mock_countletters,
+            "PeopleSQL": self._mock_peoplesql,
+            "Reasoning.Core": self._mock_reasoning_core
+        }
+    
+    def execute_tool(self, tool_name: str, inputs: Dict) -> Dict:
+        """Execute a tool with given inputs."""
+        if tool_name not in self.tool_implementations:
+            return {"error": f"Tool {tool_name} not implemented"}
+        
+        try:
+            tool_func = self.tool_implementations[tool_name]
+            result = tool_func(inputs)
+            return result
+        except Exception as e:
+            logger.error(f"Tool {tool_name} execution failed: {e}")
+            return {"error": str(e)}
+    
+    def _mock_evalmath(self, inputs: Dict) -> Dict:
+        """Mock implementation of EvalMath."""
+        expr = inputs.get("expr", "")
+        try:
+            # Simple safe evaluation for MVP
+            allowed_chars = set('0123456789+-*/().eE ')
+            if not all(c in allowed_chars for c in expr):
+                return {"error": "Invalid characters in expression"}
+            
+            result = eval(expr)
+            if not isinstance(result, (int, float)):
+                return {"error": "Expression must evaluate to a number"}
+            
+            return {"result": result}
+        except ZeroDivisionError:
+            return {"error": "Division by zero"}
+        except SyntaxError:
+            return {"error": "Invalid syntax"}
+        except Exception as e:
+            return {"error": f"Evaluation failed: {str(e)}"}
+    
+    def _mock_countletters(self, inputs: Dict) -> Dict:
+        """Mock implementation of CountLetters."""
+        letter = inputs.get("letter", "")
+        word = inputs.get("word", "")
+        
+        if len(letter) != 1:
+            return {"error": "Letter must be exactly one character"}
+        
+        if not word:
+            return {"error": "Word must be non-empty"}
+        
+        count = word.count(letter)
+        return {"count": count}
+    
+    def _mock_peoplesql(self, inputs: Dict) -> Dict:
+        """Mock implementation of PeopleSQL."""
+        filters = inputs.get("filters", [])
+        
+        # Mock data for testing
+        mock_people = [
+            {"id": "E3", "name": "Alice Smith", "city": "Seattle"},
+            {"id": "E4", "name": "Bob Johnson", "city": "Seattle"},
+            {"id": "E5", "name": "Charlie Brown", "city": "Portland"}
+        ]
+        
+        # Simple filter logic for MVP
+        results = []
+        for person in mock_people:
+            matches = True
+            for filter_dict in filters:
+                if "city" in filter_dict:
+                    if person["city"] != filter_dict["city"]:
+                        matches = False
+                        break
+                elif "is_friend" in filter_dict:
+                    # Mock: assume Alice and Bob are friends
+                    if person["name"] not in ["Alice Smith", "Bob Johnson"]:
+                        matches = False
+                        break
+            
+            if matches:
+                results.append(person)
+        
+        return {"people": results}
+
+    def _mock_reasoning_core(self, inputs: Dict) -> Dict:
+        """Minimal deterministic reasoning/planning stub.
+
+        Deduction mode: if query predicate is grandparentOf and facts include a simple two-hop parent chain, return proof.
+        Planning mode: return a canned 3-4 step plan for event.scheduled.
+        Always enforces budgets presence; if missing, return error.
+        """
+        budgets = inputs.get("budgets")
+        if not isinstance(budgets, dict):
+            return {"error": "budgets_required"}
+        # enforce hard caps (no real search in stub)
+        mode = inputs.get("mode")
+        if mode == "deduction":
+            query = inputs.get("query", {})
+            pred = (query or {}).get("predicate")
+            args = (query or {}).get("args", [])
+            if pred == "grandparentOf" and len(args) == 2:
+                # toy facts from inputs
+                facts = inputs.get("facts", [])
+                x, z = args[0], args[1]
+                # look for Y such that parentOf(X,Y) and parentOf(Y,Z)
+                y_candidates = set()
+                for f in facts:
+                    if f.get("predicate") == "parentOf" and f.get("args", [None, None])[0] == x:
+                        y_candidates.add(f.get("args")[1])
+                for y in y_candidates:
+                    for f in facts:
+                        if f.get("predicate") == "parentOf" and f.get("args", [None, None])[0] == y and f.get("args")[1] == z:
+                            steps = [{"op": "infer", "rule": "parent∘parent→grandparent", "bindings": {"X": x, "Y": y, "Z": z}}]
+                            return {
+                                "kind": "logic.answer",
+                                "value": True,
+                                "trajectory": {"steps": steps, "metrics": {"depth_used": 1, "nodes_expanded": 2}},
+                                "assertions": [{"subject": f"{x}", "predicate": "grandparentOf", "object": f"{z}", "proof_ref": "local"}]
+                            }
+                return {"kind": "logic.answer", "value": False, "trajectory": {"steps": [], "metrics": {"depth_used": 1}}}
+            return {"error": "unsupported_query"}
+        elif mode == "planning":
+            goal = inputs.get("goal", {})
+            pred = (goal or {}).get("predicate")
+            if pred == "event.scheduled":
+                steps = ["ResolvePerson", "CheckCalendar", "ProposeSlots", "CreateEvent"]
+                return {
+                    "kind": "plan",
+                    "trajectory": {"steps": steps, "metrics": {"depth_used": 1, "beam_used": 1}},
+                    "feasible": True
+                }
+            return {"error": "unsupported_goal"}
+        return {"error": "mode_required"}
+
+
+# Example usage
+if __name__ == "__main__":
+    # Test tool registry
+    registry = ToolRegistry()
+    print(f"Loaded {len(registry.list_tools())} tools")
+    
+    # Test tool selection
+    math_tools = registry.find_tools_for_obligation("REPORT")
+    print(f"Tools for REPORT: {[t.name for t in math_tools]}")
+    
+    # Test tool execution
+    executor = ToolExecutor(registry)
+    
+    # Test EvalMath
+    result = executor.execute_tool("EvalMath", {"expr": "2+2"})
+    print(f"EvalMath result: {result}")
+    
+    # Test CountLetters
+    result = executor.execute_tool("TextOps.CountLetters", {"letter": "r", "word": "strawberry"})
+    print(f"CountLetters result: {result}")
+    
+    # Test PeopleSQL
+    result = executor.execute_tool("PeopleSQL", {"filters": [{"city": "Seattle"}]})
+    print(f"PeopleSQL result: {result}")

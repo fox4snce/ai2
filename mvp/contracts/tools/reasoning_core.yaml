@@ -1,0 +1,46 @@
+name: Reasoning.Core
+description: Deterministic bounded reasoning and planning engine
+version: 0.1.0
+consumes:
+  - kind: query.logic
+    schema:
+      type: object
+      properties:
+        query:
+          type: object
+        rules:
+          type: array
+        budgets:
+          type: object
+      required: [query, budgets]
+  - kind: plan.goal
+    schema:
+      type: object
+      properties:
+        goal:
+          type: object
+        budgets:
+          type: object
+      required: [goal, budgets]
+produces:
+  - assertion:
+      subject: Logic
+      predicate: proves
+      object: proposition
+  - event:
+      kind: trajectory
+satisfies:
+  - REPORT(query.logic)
+  - ACHIEVE(plan.goal)
+preconditions:
+  - budgets_present
+  - rules_enabled_or_builtin
+postconditions:
+  - proof_or_plan_emitted
+cost: tiny
+reliability: high
+latency_ms: 10
+verify_mode: non_blocking
+implementation:
+  type: builtin
+
