@@ -5,26 +5,23 @@ jobs:
   proof:
     runs-on: ubuntu-latest
     env:
-      # ---- config you can tweak without touching the steps ----
       PYTHONHASHSEED: "0"
       PP_ENGINE_URL: "http://127.0.0.1:8000"
-      APP_DIR: "src"                     # where your Python packages live
-      APP_MODULE: "mvp.api.server:app"   # <--- CHANGE THIS IF YOUR app IS ELSEWHERE
 
     steps:
-      # Repo A (engine, private)
+      # --- Repo A (engine, private) ---
       - name: Checkout engine (Repo A)
         uses: actions/checkout@v4
 
-      # Repo B (packet, public)
+      # --- Repo B (packet, public) ---
       - name: Checkout Proof Packet (Repo B)
         uses: actions/checkout@v4
         with:
-          repository: fox4snce/ai-organism-proof-packet
+          repository: fox4snce/ai-organism-proof-packet   # <-- your public packet repo
           path: packet
           persist-credentials: false
 
-      # Python toolchain
+      # --- Python toolchain ---
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
@@ -42,8 +39,8 @@ jobs:
             echo "No requirements.txt; skipping pip install"
           fi
 
-      # Seed (optional) + start engine (no guessing; uses APP_MODULE/APP_DIR)
-      - name: Seed if present & start engine (with logs)
+      # --- (optional) seed + start server EXACTLY like local: python -m src.api ---
+      - name: Seed (if present) & start engine
         shell: bash
         run: |
           set -euo pipefail
@@ -61,20 +58,20 @@ jobs:
             echo "No seed script found; continuing."
           fi
 
-          # Safe PYTHONPATH even under 'set -u'
-          export PYTHONPATH="${PWD}/${APP_DIR}${PYTHONPATH:+:$PYTHONPATH}"
-          echo "PYTHONPATH=$PYTHONPATH"
-          echo "Starting: uvicorn ${APP_MODULE} --app-dir ${APP_DIR}"
+          # run EXACTLY like your local Windows command:
+          # Start server in background, capture logs, record PID
+          echo "Starting engine via: python -m src.api"
+          ( python -m src.api > server.log 2>&1 & echo $! > server.pid )
 
-          # Start server; capture logs; store PID
-          ( uvicorn "${APP_MODULE}" --app-dir "${APP_DIR}" --host 127.0.0.1 --port 8000 > server.log 2>&1 & echo $! > server.pid ) || true
+          # quick sanity check the process is alive
           sleep 1
           if ! ps -p "$(cat server.pid 2>/dev/null)" >/dev/null 2>&1; then
             echo "Engine failed to launch. Last logs:"; tail -n 200 server.log || true
             exit 1
           fi
 
-      - name: Wait for engine (healthcheck + logs on failure)
+      # --- wait for healthcheck; print logs if it dies or times out ---
+      - name: Wait for engine
         shell: bash
         run: |
           set -euo pipefail
@@ -83,15 +80,15 @@ jobs:
               echo "Engine ready"; exit 0
             fi
             if ! ps -p "$(cat server.pid)" >/dev/null 2>&1; then
-              echo "Engine died. Last logs:"; tail -n 200 server.log || true
+              echo "Engine process died. Last logs:"; tail -n 200 server.log || true
               exit 1
             fi
             sleep 1
           done
-          echo "Engine not ready in time. Last logs:"; tail -n 200 server.log || true
+          echo "Engine failed to become ready in time. Last logs:"; tail -n 200 server.log || true
           exit 1
 
-      # Run Proof Packet
+      # --- run the proof packet against the running engine ---
       - name: Run Proof Packet
         working-directory: packet
         shell: bash
@@ -105,7 +102,7 @@ jobs:
           make bench N=128
           make bundle
 
-      # Artifacts (traces, benches, bundle, server logs)
+      # --- upload artifacts (traces, benches, bundle, server logs) ---
       - name: Upload results
         uses: actions/upload-artifact@v4
         with:
