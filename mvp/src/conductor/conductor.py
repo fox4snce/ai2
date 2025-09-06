@@ -286,6 +286,29 @@ class Conductor:
                 self.db.create_assertion(assertion)
             
             # 7. Update obligation status
+            # Guardrails check (precedes clarify/truncated handling)
+            if parsed_obligation.type == "ACHIEVE" and parsed_obligation.raw_payload.get("state") == "plan":
+                constraints = parsed_obligation.raw_payload.get("guardrails") or []
+                if constraints:
+                    checker = self.registry.get_tool("GuardrailChecker")
+                    if checker:
+                        chk_inputs = {"constraints": constraints, "goal": parsed_obligation.raw_payload.get("goal")}
+                        chk_out = self.executor.execute_tool("GuardrailChecker", chk_inputs)
+                        if (chk_out or {}).get("status") == "failed":
+                            self.db.update_obligation_status(obligation_id, "failed")
+                            tool_outputs = dict(tool_outputs)
+                            tool_outputs.setdefault("why_not", []).append("guardrail_failed")
+                            tool_outputs["justification"] = chk_out.get("justification", [])
+                            return ExecutionResult(
+                                obligation_id=obligation_id,
+                                success=False,
+                                tool_name=selected_tool.name,
+                                assertions=assertions,
+                                duration_ms=int((time.time() - start_time) * 1000),
+                                inputs=tool_inputs,
+                                outputs=tool_outputs
+                            )
+
             # If tool indicated truncated or clarify, do not mark resolved
             if tool_outputs.get("status") == "truncated":
                 self.db.update_obligation_status(obligation_id, "failed")
@@ -320,9 +343,9 @@ class Conductor:
                         chk_out = self.executor.execute_tool("GuardrailChecker", chk_inputs)
                         if (chk_out or {}).get("status") == "failed":
                             self.db.update_obligation_status(obligation_id, "failed")
-                            # augment outputs with why_not
+                            # augment outputs with why_not and justification for trace
                             tool_outputs = dict(tool_outputs)
-                            tool_outputs["why_not"] = ["guardrail_failed"]
+                            tool_outputs.setdefault("why_not", []).append("guardrail_failed")
                             tool_outputs["justification"] = chk_out.get("justification", [])
                             return ExecutionResult(
                                 obligation_id=obligation_id,

@@ -1,0 +1,38 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Trace Schema",
+  "type": "object",
+  "properties": {
+    "trace_id": {"type": "string"},
+    "timestamp": {"type": "string"},
+    "user_input": {"type": "string"},
+    "obligations": {"type": "array"},
+    "tool_runs": {"type": "array"},
+    "assertions": {"type": "array"},
+    "verification": {"type": "object"},
+    "status": {"type": "string", "enum": ["resolved","clarify","failed","truncated"]},
+    "final_answer": {"type": "string"},
+    "metrics": {"type": "object"},
+    "capabilities_satisfied": {"type": "array", "items": {"type": "string"}},
+    "why_not": { "type": "array", "items": { "type": "string" } },
+    "justification": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "predicate": { "type": "string" },
+          "args": {},
+          "reason": { "type": "string" }
+        },
+        "required": ["predicate","reason"]
+      }
+    },
+    "tools_used": { "type": "array", "items": { "type": "string" } },
+    "rules_fired": { "type": "array", "items": { "type": "string" } },
+    "trajectory": { "type": "object" }
+  },
+  "required": ["trace_id", "timestamp", "tool_runs", "status", "metrics"],
+  "additionalProperties": true
+}
+
+

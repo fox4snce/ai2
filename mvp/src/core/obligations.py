@@ -51,7 +51,7 @@ class ParsedObligation:
 class ObligationValidator:
     """Validates obligations against the schema."""
     
-    def __init__(self, schema_path: str = "contracts/obligations.schema.json"):
+    def __init__(self, schema_path: str = "schemas/obligation.schema.json"):
         """Initialize with schema."""
         with open(schema_path, "r") as f:
             self.schema = json.load(f)

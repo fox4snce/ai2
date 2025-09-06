@@ -67,7 +67,7 @@ class ToolRegistry:
     def _load_tool_schema(self) -> Dict:
         """Load tool contract schema."""
         base_dir = Path(__file__).resolve().parents[2]
-        schema_path = base_dir / "contracts" / "tool.schema.json"
+        schema_path = base_dir / "schemas" / "tool.schema.json"
         with open(schema_path, "r") as f:
             return json.load(f)
     
@@ -382,8 +382,11 @@ class ToolExecutor:
                 # pretend the guardrail fails if person == "Alice" on Mondays
                 args = c.get("args")
                 who = args[0] if isinstance(args, list) and args else args.get("person") if isinstance(args, dict) else None
-                if who in ("Alice",):
-                    violations.append({"predicate": pred, "reason": "busy"})
+                if who in ("Alice", "Dana"):
+                    violations.append({"predicate": pred, "args": args, "reason": "Busy at requested interval"})
+            elif pred == "double_book":
+                args = c.get("args")
+                violations.append({"predicate": pred, "args": args, "reason": "Existing event overlaps the requested time"})
         if violations:
             return {"status": "failed", "justification": violations}
         return {"status": "passed"}
