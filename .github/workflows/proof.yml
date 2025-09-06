@@ -46,12 +46,10 @@ jobs:
 
             echo "pwd=$(pwd)"
             echo "Looking for seed script…"
-            # Try common locations; adjust/add if yours differs
             SEED=""
             for p in scripts/seed.py mvp/scripts/seed.py; do
               if [[ -f "$p" ]]; then SEED="$p"; break; fi
             done
-
             if [[ -n "$SEED" ]]; then
               echo "Running seed: $SEED"
               python "$SEED"
@@ -59,13 +57,26 @@ jobs:
               echo "No seed script found; continuing."
             fi
 
-            # Try your local entrypoint first
-            export PYTHONPATH="$PWD/src:$PYTHONPATH"
+            echo "Sanity import of src.api…"
+            python - <<'PY'
+import importlib, sys
+try:
+    importlib.import_module('src.api')
+    print("OK: import src.api")
+except Exception as e:
+    print("FAIL: import src.api ->", e)
+    sys.exit(1)
+PY
+
+            # SAFE: handle unset PYTHONPATH under `set -u`
+            export PYTHONPATH="${PWD}/src${PYTHONPATH:+:$PYTHONPATH}"
+            echo "PYTHONPATH=$PYTHONPATH"
+
             echo "Starting engine via: python -m src.api"
             ( python -m src.api > server.log 2>&1 & echo $! > server.pid ) || true
             sleep 1
 
-            # If process died immediately, fall back to uvicorn with --app-dir src
+            # Fallback to uvicorn if it died immediately
             if ! ps -p $(cat server.pid 2>/dev/null) >/dev/null 2>&1; then
               echo "Fallback: starting via uvicorn api.server:app --app-dir src"
               ( uvicorn api.server:app --app-dir src --host 127.0.0.1 --port 8000 > server.log 2>&1 & echo $! > server.pid ) || true
