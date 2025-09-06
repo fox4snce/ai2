@@ -1,0 +1,69 @@
+name: Proof Packet Demo
+on: [push, pull_request]
+
+jobs:
+  proof:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONHASHSEED: "0"  # Makes Python deterministic
+    steps:
+      # Get your private engine code
+      - uses: actions/checkout@v4
+      
+      # Pull the public demo repo into a subfolder
+      - name: Get demo packet
+        uses: actions/checkout@v4
+        with:
+          repository: fox4snce/ai-organism-proof-packet  # ← change this
+          path: packet
+          persist-credentials: false
+
+      # Set up Python
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with: 
+          python-version: "3.11"
+
+      # Install your engine's dependencies
+      - name: Install dependencies
+        run: |
+          python -m venv .venv
+          . .venv/bin/activate
+          pip install -r requirements.txt
+
+      # Start your engine in the background
+      - name: Start engine
+        run: |
+          . .venv/bin/activate
+          python scripts/seed.py  # your database setup script
+          uvicorn src.api.server:app --host 127.0.0.1 --port 8000 &
+
+      # Wait for it to be ready
+      - name: Wait for engine
+        run: |
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:8000/v1/tools && exit 0 || true
+            sleep 1
+          done
+          echo "Engine failed to start" && exit 1
+
+      # Run the actual demos
+      - name: Run demos
+        working-directory: packet
+        env:
+          PP_ENGINE_URL: "http://127.0.0.1:8000"
+        run: |
+          make demo       # runs the main demonstrations
+          make verify     # verifies deterministic behavior
+          make bench N=32 # performance benchmarks
+          make bundle     # packages everything up
+
+      # Save the results
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: proof-packet-results
+          path: |
+            packet/runs/*.trace.json
+            packet/artifacts/**/*.json
+            packet/artifacts/proof_packet.zip
