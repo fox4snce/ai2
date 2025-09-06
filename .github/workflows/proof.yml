@@ -51,6 +51,9 @@ jobs:
             echo "No scripts/seed.py; skipping seed."
           fi
 
+          # Ensure engine package path is available
+          export PYTHONPATH="$PWD/mvp:$PYTHONPATH"
+
           echo "Sanity import of src.api…"
           python - <<'PY'
 import importlib, sys
@@ -62,9 +65,8 @@ except Exception as e:
     sys.exit(1)
 PY
 
-          # Start exactly like local; capture logs
-          export PYTHONPATH="$PWD/src:$PYTHONPATH"
-          python -m src.api > server.log 2>&1 &
+          # Start engine via uvicorn; capture logs
+          uvicorn src.api:app --host 127.0.0.1 --port 8000 > server.log 2>&1 &
           echo $! > server.pid
           echo "Engine PID: $(cat server.pid)"
 
