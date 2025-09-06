@@ -5,60 +5,101 @@ jobs:
   proof:
     runs-on: ubuntu-latest
     env:
-      PYTHONHASHSEED: "0"  # Makes Python deterministic
+      PYTHONHASHSEED: "0"               # deterministic hashing
+      PP_ENGINE_URL: "http://127.0.0.1:8000"
+
     steps:
-      # Get your private engine code
-      - uses: actions/checkout@v4
-      
-      # Pull the public demo repo into a subfolder
-      - name: Get demo packet
+      # Repo A (engine, private)
+      - name: Checkout engine (Repo A)
+        uses: actions/checkout@v4
+
+      # Repo B (packet, public)
+      - name: Checkout Proof Packet (Repo B)
         uses: actions/checkout@v4
         with:
-          repository: fox4snce/ai-organism-proof-packet  # ← change this
+          repository: fox4snce/ai-organism-proof-packet   # <-- your packet repo
           path: packet
           persist-credentials: false
 
-      # Set up Python
+      # Python toolchain
       - name: Setup Python
         uses: actions/setup-python@v5
-        with: 
+        with:
           python-version: "3.11"
 
-      # Install your engine's dependencies
-      - name: Install dependencies
+      - name: Install engine deps
+        shell: bash
         run: |
           python -m venv .venv
           . .venv/bin/activate
           pip install -r requirements.txt
 
-      # Start your engine in the background
-      - name: Start engine
+      # Optional seed (auto-detect), then start engine exactly like local
+      - name: Seed (if present) & start engine
+        shell: bash
         run: |
+          set -euo pipefail
           . .venv/bin/activate
-          python mvp/scripts/seed.py  # your database setup script
-          uvicorn src.api.server:app --host 127.0.0.1 --port 8000 &
 
-      # Wait for it to be ready
-      - name: Wait for engine
+          echo "pwd=$(pwd)"
+          echo "Searching for scripts/seed.py…"
+          SEED=$(git ls-files | grep -E '(^|/)scripts/seed\.py$' || true)
+          if [ -n "$SEED" ]; then
+            echo "Found seed at: $SEED"
+            python "$SEED"
+          else
+            echo "No scripts/seed.py; skipping seed."
+          fi
+
+          echo "Sanity import of src.api…"
+          python - <<'PY'
+import importlib, sys
+try:
+    importlib.import_module('src.api')
+    print("OK: import src.api")
+except Exception as e:
+    print("FAIL: import src.api ->", e)
+    sys.exit(1)
+PY
+
+          # Start exactly like local; capture logs
+          export PYTHONPATH="$PWD/src:$PYTHONPATH"
+          python -m src.api > server.log 2>&1 &
+          echo $! > server.pid
+          echo "Engine PID: $(cat server.pid)"
+
+      - name: Wait for engine (with logs if it dies)
+        shell: bash
         run: |
+          set -euo pipefail
           for i in $(seq 1 30); do
-            curl -sf http://127.0.0.1:8000/v1/tools && exit 0 || true
+            if curl -sf http://127.0.0.1:8000/v1/tools >/dev/null; then
+              echo "Engine ready"
+              exit 0
+            fi
+            if ! ps -p $(cat server.pid) > /dev/null; then
+              echo "Engine process died. Last logs:"; tail -n 200 server.log || true
+              exit 1
+            fi
             sleep 1
           done
-          echo "Engine failed to start" && exit 1
+          echo "Engine failed to start in time. Last logs:"; tail -n 200 server.log || true
+          exit 1
 
-      # Run the actual demos
-      - name: Run demos
+      # Run Proof Packet (Repo B) against the engine
+      - name: Run Proof Packet
         working-directory: packet
+        shell: bash
         env:
           PP_ENGINE_URL: "http://127.0.0.1:8000"
         run: |
-          make demo       # runs the main demonstrations
-          make verify     # verifies deterministic behavior
-          make bench N=32 # performance benchmarks
-          make bundle     # packages everything up
+          make demo
+          make verify --strict
+          make bench N=32
+          make bench N=128
+          make bundle
 
-      # Save the results
+      # Artifacts
       - name: Upload results
         uses: actions/upload-artifact@v4
         with:
