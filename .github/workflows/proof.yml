@@ -5,23 +5,26 @@ jobs:
   proof:
     runs-on: ubuntu-latest
     env:
-      PYTHONHASHSEED: "0"                 # deterministic hashing
+      # ---- config you can tweak without touching the steps ----
+      PYTHONHASHSEED: "0"
       PP_ENGINE_URL: "http://127.0.0.1:8000"
+      APP_DIR: "src"                     # where your Python packages live
+      APP_MODULE: "mvp.api.server:app"   # <--- CHANGE THIS IF YOUR app IS ELSEWHERE
 
     steps:
-      # --- Repo A (engine, private) ---
+      # Repo A (engine, private)
       - name: Checkout engine (Repo A)
         uses: actions/checkout@v4
 
-      # --- Repo B (packet, public) ---
+      # Repo B (packet, public)
       - name: Checkout Proof Packet (Repo B)
         uses: actions/checkout@v4
         with:
-          repository: fox4snce/ai-organism-proof-packet   # <-- set your public packet repo
+          repository: fox4snce/ai-organism-proof-packet
           path: packet
           persist-credentials: false
 
-      # --- Python toolchain ---
+      # Python toolchain
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
@@ -39,14 +42,13 @@ jobs:
             echo "No requirements.txt; skipping pip install"
           fi
 
-      # --- Seed (optional) + start engine with logs ---
+      # Seed (optional) + start engine (no guessing; uses APP_MODULE/APP_DIR)
       - name: Seed if present & start engine (with logs)
         shell: bash
         run: |
           set -euo pipefail
           . .venv/bin/activate
 
-          echo "pwd=$(pwd)"
           echo "Looking for seed script…"
           SEED=""
           for p in scripts/seed.py mvp/scripts/seed.py; do
@@ -59,45 +61,37 @@ jobs:
             echo "No seed script found; continuing."
           fi
 
-          # SAFE: handle unset PYTHONPATH under `set -u`
-          export PYTHONPATH="${PWD}/src${PYTHONPATH:+:$PYTHONPATH}"
+          # Safe PYTHONPATH even under 'set -u'
+          export PYTHONPATH="${PWD}/${APP_DIR}${PYTHONPATH:+:$PYTHONPATH}"
           echo "PYTHONPATH=$PYTHONPATH"
+          echo "Starting: uvicorn ${APP_MODULE} --app-dir ${APP_DIR}"
 
-          echo "Starting engine via: python -m src.api"
-          ( python -m src.api > server.log 2>&1 & echo $! > server.pid ) || true
+          # Start server; capture logs; store PID
+          ( uvicorn "${APP_MODULE}" --app-dir "${APP_DIR}" --host 127.0.0.1 --port 8000 > server.log 2>&1 & echo $! > server.pid ) || true
           sleep 1
-
-          # Fallback to uvicorn if it died immediately
-          if ! ps -p "$(cat server.pid 2>/dev/null)" >/dev/null 2>&1; then
-            echo "Fallback: starting via uvicorn api.server:app --app-dir src"
-            ( uvicorn api.server:app --app-dir src --host 127.0.0.1 --port 8000 > server.log 2>&1 & echo $! > server.pid ) || true
-            sleep 1
-          fi
-
           if ! ps -p "$(cat server.pid 2>/dev/null)" >/dev/null 2>&1; then
             echo "Engine failed to launch. Last logs:"; tail -n 200 server.log || true
             exit 1
           fi
 
-      # --- Wait for healthcheck; dump logs if it dies ---
-      - name: Wait for engine (healthcheck + live logs on failure)
+      - name: Wait for engine (healthcheck + logs on failure)
         shell: bash
         run: |
           set -euo pipefail
-          for i in $(seq 1 45); do
+          for i in $(seq 1 60); do
             if curl -sf http://127.0.0.1:8000/v1/tools >/dev/null; then
               echo "Engine ready"; exit 0
             fi
             if ! ps -p "$(cat server.pid)" >/dev/null 2>&1; then
-              echo "Engine process died. Last logs:"; tail -n 200 server.log || true
+              echo "Engine died. Last logs:"; tail -n 200 server.log || true
               exit 1
             fi
             sleep 1
           done
-          echo "Engine failed to become ready in time. Last logs:"; tail -n 200 server.log || true
+          echo "Engine not ready in time. Last logs:"; tail -n 200 server.log || true
           exit 1
 
-      # --- Run Proof Packet against the engine ---
+      # Run Proof Packet
       - name: Run Proof Packet
         working-directory: packet
         shell: bash
@@ -111,7 +105,7 @@ jobs:
           make bench N=128
           make bundle
 
-      # --- Upload artifacts (traces, benches, bundle, server logs) ---
+      # Artifacts (traces, benches, bundle, server logs)
       - name: Upload results
         uses: actions/upload-artifact@v4
         with:
