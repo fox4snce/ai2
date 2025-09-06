@@ -191,3 +191,4 @@ Tool selection by priority:
 5. **Tool Discovery**: Automated tool creation for missing capabilities
 
 The conductor, IR, and verify loop stay the same as you add tools and tighten adapters.
+
