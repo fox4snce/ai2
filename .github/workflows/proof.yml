@@ -4,9 +4,6 @@ on: [push, pull_request]
 jobs:
   proof:
     runs-on: ubuntu-latest
-    env:
-      PYTHONHASHSEED: "0"
-      PP_ENGINE_URL: "http://127.0.0.1:8000"
 
     steps:
       # --- Repo A (engine, private) ---
@@ -17,34 +14,9 @@ jobs:
       - name: Checkout Proof Packet (Repo B)
         uses: actions/checkout@v4
         with:
-          repository: fox4snce/ai-organism-proof-packet   # set your public packet repo
+          repository: fox4snce/ai-organism-proof-packet
           path: packet
           persist-credentials: false
-
-      # --- Detect engine directory ('.' or 'mvp') and requirements path ---
-      - name: Detect engine layout
-        id: detect
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ -d mvp/src && -f mvp/scripts/seed.py ]]; then
-            echo "ENGINE_DIR=mvp" >> "$GITHUB_ENV"
-          elif [[ -d mvp/src ]]; then
-            echo "ENGINE_DIR=mvp" >> "$GITHUB_ENV"
-          else
-            echo "ENGINE_DIR=." >> "$GITHUB_ENV"
-          fi
-
-          if [[ -f requirements.txt ]]; then
-            echo "ENGINE_REQ=requirements.txt" >> "$GITHUB_ENV"
-          elif [[ -f mvp/requirements.txt ]]; then
-            echo "ENGINE_REQ=mvp/requirements.txt" >> "$GITHUB_ENV"
-          else
-            echo "ENGINE_REQ=" >> "$GITHUB_ENV"
-          fi
-
-          echo "Detected ENGINE_DIR=$(grep ENGINE_DIR $GITHUB_ENV | tail -1 | cut -d= -f2)"
-          echo "Detected ENGINE_REQ=$(grep ENGINE_REQ $GITHUB_ENV | tail -1 | cut -d= -f2 || true)"
 
       # --- Python toolchain ---
       - name: Setup Python
@@ -52,81 +24,90 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install engine deps
+      - name: Create venv & install engine deps
         shell: bash
         run: |
           set -euo pipefail
           python -m venv .venv
-          . .venv/bin/activate
-          if [[ -n "${ENGINE_REQ:-}" && -f "${ENGINE_REQ:-}" ]]; then
-            pip install -r "${ENGINE_REQ}"
-          elif [[ -f requirements.txt ]]; then
+          source .venv/bin/activate
+          if [ -f mvp/requirements.txt ]; then
+            pip install -r mvp/requirements.txt
+          elif [ -f requirements.txt ]; then
             pip install -r requirements.txt
           else
             echo "No requirements.txt; skipping pip install"
           fi
 
-      # --- Seed (optional) + start server EXACTLY like local: python -m src.api ---
-      - name: Seed (if present) & start engine
+      # --- Seed (optional) & start engine EXACTLY like local: python -m src.api ---
+      - name: Seed (optional) & start engine
         shell: bash
-        working-directory: ${{ env.ENGINE_DIR }}
+        working-directory: mvp
         run: |
           set -euo pipefail
-          # activate venv from repo root even if we're in subdir
-          . "$GITHUB_WORKSPACE/.venv/bin/activate"
+          source ../.venv/bin/activate
 
-          echo "pwd=$(pwd)"
-
-          if [[ -f scripts/seed.py ]]; then
+          if [ -f scripts/seed.py ]; then
             echo "Running seed: scripts/seed.py"
             python scripts/seed.py
           else
-            echo "No scripts/seed.py; skipping seed."
+            echo "No seed script; skipping"
           fi
 
           echo "Starting engine via: python -m src.api"
-          # Start server in background, capture logs, record PID (all in ENGINE_DIR)
-          ( python -m src.api > server.log 2>&1 & echo $! > server.pid )
+          python -m src.api > ../server.log 2>&1 &
+          echo $! > ../server.pid
 
-          # quick sanity check the process is alive
           sleep 1
-          if ! ps -p "$(cat server.pid 2>/dev/null)" >/dev/null 2>&1; then
-            echo "Engine failed to launch. Last logs:"; tail -n 200 server.log || true
+          if ! ps -p "$(cat ../server.pid)" >/dev/null 2>&1; then
+            echo "Engine failed to launch. Last logs:"
+            tail -n 200 ../server.log || true
             exit 1
           fi
 
-      # --- wait for healthcheck; print logs if it dies or times out ---
       - name: Wait for engine
         shell: bash
-        working-directory: ${{ env.ENGINE_DIR }}
         run: |
           set -euo pipefail
           for i in $(seq 1 60); do
             if curl -sf http://127.0.0.1:8000/v1/tools >/dev/null; then
-              echo "Engine ready"; exit 0
+              echo "Engine ready"
+              exit 0
             fi
             if ! ps -p "$(cat server.pid)" >/dev/null 2>&1; then
-              echo "Engine process died. Last logs:"; tail -n 200 server.log || true
+              echo "Engine died. Last logs:"
+              tail -n 200 server.log || true
               exit 1
             fi
             sleep 1
           done
-          echo "Engine failed to become ready in time. Last logs:"; tail -n 200 server.log || true
+          echo "Engine not ready in time. Last logs:"
+          tail -n 200 server.log || true
           exit 1
 
-      # --- Run the Proof Packet against the running engine ---
-      - name: Run Proof Packet
-        working-directory: packet
+      # --- Proof Packet: install tiny deps, run via python (no exec bit needed) ---
+      - name: Install packet deps
         shell: bash
+        working-directory: packet
+        run: |
+          set -euo pipefail
+          source ../.venv/bin/activate
+          pip install -q requests PyYAML jsonschema
+          sed -i 's/\r$//' bin/pp || true
+          mkdir -p artifacts/bench
+
+      - name: Run Proof Packet
+        shell: bash
+        working-directory: packet
         env:
           PP_ENGINE_URL: "http://127.0.0.1:8000"
         run: |
           set -euo pipefail
-          make demo
-          make verify --strict
-          make bench N=32
-          make bench N=128
-          make bundle
+          source ../.venv/bin/activate
+          python bin/pp run demos/*.json --out runs/
+          python bin/pp verify runs/ golden/ --strict
+          python bin/pp bench --concurrency 32  --save artifacts/bench/bench_32.json
+          python bin/pp bench --concurrency 128 --save artifacts/bench/bench_128.json
+          python bin/pp bundle --output artifacts/proof_packet.zip
 
       # --- Upload artifacts (traces, benches, bundle, server logs) ---
       - name: Upload results
@@ -137,4 +118,4 @@ jobs:
             packet/runs/*.trace.json
             packet/artifacts/**/*.json
             packet/artifacts/proof_packet.zip
-            ${{ env.ENGINE_DIR }}/server.log
+            server.log
