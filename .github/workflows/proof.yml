@@ -35,7 +35,7 @@ jobs:
       - name: Start engine
         run: |
           . .venv/bin/activate
-          python scripts/seed.py  # your database setup script
+          python mvp/scripts/seed.py  # your database setup script
           uvicorn src.api.server:app --host 127.0.0.1 --port 8000 &
 
       # Wait for it to be ready
