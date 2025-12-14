@@ -1,0 +1,5 @@
+{
+    "obligations": [
+      { "type": "REPORT", "payload": { "kind": "normalize_url", "url": "www.bob.com" } }
+    ]
+  }

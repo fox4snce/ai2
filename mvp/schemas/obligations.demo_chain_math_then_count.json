@@ -1,0 +1,23 @@
+{
+  "obligations": [
+    {
+      "type": "ACHIEVE",
+      "payload": {
+        "state": "plan",
+        "mode": "planning",
+        "goal": {
+          "predicate": "demo.chain",
+          "args": {
+            "steps": [
+              { "type": "REPORT", "payload": { "kind": "math", "expr": "2+2" } },
+              { "type": "REPORT", "payload": { "kind": "count", "letter": "r", "word": "strawberry" } }
+            ]
+          }
+        },
+        "budgets": { "max_depth": 1, "beam": 1, "time_ms": 50 }
+      }
+    }
+  ]
+}
+
+

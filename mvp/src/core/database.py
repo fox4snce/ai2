@@ -386,6 +386,23 @@ class IRDatabase:
                 event_id=row["event_id"]
             ))
         return obligations
+
+    def get_obligation(self, obligation_id: str) -> Optional[Obligation]:
+        """Fetch a single obligation by id."""
+        with self._lock:
+            cursor = self.conn.cursor()
+            cursor.execute("SELECT * FROM obligation WHERE id = ?", (obligation_id,))
+            row = cursor.fetchone()
+            if not row:
+                return None
+            return Obligation(
+                id=row["id"],
+                kind=row["kind"],
+                details_jsonb=json.loads(row["details_jsonb"]),
+                status=row["status"],
+                created_at=datetime.fromisoformat(row["created_at"]) if row["created_at"] else None,
+                event_id=row["event_id"],
+            )
     
     def update_obligation_status(self, obligation_id: str, status: str):
         """Update obligation status."""

@@ -17,7 +17,7 @@ def check_python_version():
     if sys.version_info < (3, 8):
         print("Error: Python 3.8 or higher is required")
         return False
-    print(f"✓ Python {sys.version_info.major}.{sys.version_info.minor} detected")
+    print(f"OK: Python {sys.version_info.major}.{sys.version_info.minor} detected")
     return True
 
 
@@ -25,11 +25,13 @@ def install_requirements():
     """Install required packages."""
     print("Installing requirements...")
     try:
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "-r", "requirements.txt"])
-        print("✓ Requirements installed")
+        # requirements.txt lives at the repo root; this script is typically run from `mvp/`
+        requirements_path = Path(__file__).resolve().parents[1] / "requirements.txt"
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "-r", str(requirements_path)])
+        print("OK: Requirements installed")
         return True
     except subprocess.CalledProcessError as e:
-        print(f"✗ Failed to install requirements: {e}")
+        print(f"FAIL: Failed to install requirements: {e}")
         return False
 
 
@@ -69,10 +71,10 @@ def setup_database():
         conn.executescript(examples_sql)
         conn.close()
         
-        print(f"✓ Database created: {db_path}")
+        print(f"OK: Database created: {db_path}")
         return True
     except Exception as e:
-        print(f"✗ Failed to setup database: {e}")
+        print(f"FAIL: Failed to setup database: {e}")
         return False
 
 
@@ -88,15 +90,15 @@ def run_tests():
                               capture_output=True, text=True)
         
         if result.returncode == 0:
-            print("✓ All tests passed")
+            print("OK: All tests passed")
             return True
         else:
-            print(f"✗ Tests failed:")
+            print("FAIL: Tests failed:")
             print(result.stdout)
             print(result.stderr)
             return False
     except Exception as e:
-        print(f"✗ Failed to run tests: {e}")
+        print(f"FAIL: Failed to run tests: {e}")
         return False
 
 
@@ -108,24 +110,24 @@ def run_demo():
                               capture_output=True, text=True)
         
         if result.returncode == 0:
-            print("✓ Demo completed successfully")
+            print("OK: Demo completed successfully")
             print("Demo output:")
             print(result.stdout)
             return True
         else:
-            print(f"✗ Demo failed:")
+            print("FAIL: Demo failed:")
             print(result.stdout)
             print(result.stderr)
             return False
     except Exception as e:
-        print(f"✗ Failed to run demo: {e}")
+        print(f"FAIL: Failed to run demo: {e}")
         return False
 
 
 def main():
     """Main setup function."""
     print("=" * 60)
-    print(" MVP OBLIGATIONS → OPERATIONS SETUP")
+    print(" MVP OBLIGATIONS -> OPERATIONS SETUP")
     print("=" * 60)
     
     success = True
@@ -152,13 +154,13 @@ def main():
     
     print("\n" + "=" * 60)
     if success:
-        print("✓ SETUP COMPLETED SUCCESSFULLY!")
+        print("OK: SETUP COMPLETED SUCCESSFULLY!")
         print("\nYou can now:")
         print("  - Run 'python demo.py' to see the system in action")
         print("  - Run 'python -m pytest tests/' to run tests")
         print("  - Import and use the MVPAPI in your own code")
     else:
-        print("✗ SETUP FAILED!")
+        print("FAIL: SETUP FAILED!")
         print("Please check the errors above and try again.")
     print("=" * 60)
     

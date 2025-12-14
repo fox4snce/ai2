@@ -31,6 +31,7 @@ class ExecutionResult:
     clarify_slot: Optional[str] = None
     inputs: Optional[Dict] = None
     outputs: Optional[Dict] = None
+    sub_results: Optional[List["ExecutionResult"]] = None
 
 
 @dataclass
@@ -106,6 +107,29 @@ class Conductor:
         for obligation_id, parsed_obligation in zip(obligation_ids, parsed_obligations):
             result = self._execute_plan_loop(obligation_id, parsed_obligation)
             execution_results.append(result)
+
+        flat_results = self._flatten_execution_results(execution_results)
+
+        # 4b. Collect missing-capability payloads and emit DISCOVER_OP obligations for toolsmithing
+        missing_caps: List[Dict[str, Any]] = []
+        for er in flat_results:
+            if not er or not er.outputs:
+                continue
+            mc = (er.outputs or {}).get("missing_capability")
+            if isinstance(mc, dict):
+                missing_caps.append(mc)
+
+        emitted_obligation_ids: List[str] = []
+        if missing_caps:
+            for i, mc in enumerate(missing_caps, start=1):
+                ob = Obligation(
+                    id=f"OB_DISCOVER_{i}_{trace_id}",
+                    kind="DISCOVER_OP",
+                    details_jsonb={"goal": mc},
+                    status="active",
+                    event_id=user_event.id,
+                )
+                emitted_obligation_ids.append(self.db.create_obligation(ob))
         
         # 5. Verify results (selective or disabled)
         verification_result = self._execute_verify_loop(execution_results)
@@ -131,14 +155,18 @@ class Conductor:
             "timestamp": datetime.now().isoformat(),
             "user_input": user_input,
             "obligations": [self._serialize_obligation(oid) for oid in obligation_ids],
-            "tool_runs": [self._serialize_execution_result(er) for er in execution_results],
-            "assertions": [self._serialize_assertion(a) for er in execution_results for a in (er.assertions or [])],
+            "tool_runs": [self._serialize_execution_result(er) for er in flat_results],
+            "assertions": [self._serialize_assertion(a) for er in flat_results for a in (er.assertions or [])],
             "verification": self._serialize_verification_result(verification_result),
             "status": status,
             "final_answer": final_answer,
             "metrics": metrics,
-            "capabilities_satisfied": self._collect_capabilities(execution_results)
+            "capabilities_satisfied": self._collect_capabilities(flat_results)
         }
+        if missing_caps:
+            trace["missing_capabilities"] = missing_caps
+        if emitted_obligation_ids:
+            trace["emitted_obligations"] = [self._serialize_obligation(oid) for oid in emitted_obligation_ids]
         # If any clarify requested, include it in trace for gating
         if any(er.clarify_slot for er in execution_results):
             trace["clarify"] = [er.clarify_slot for er in execution_results if er.clarify_slot]
@@ -204,6 +232,7 @@ class Conductor:
                             outputs={"name": name_assertions[-1].object}
                         )
                     # clarify
+                    self.db.update_obligation_status(obligation_id, "active")
                     return ExecutionResult(
                         obligation_id=obligation_id,
                         success=False,
@@ -223,12 +252,21 @@ class Conductor:
                         clarify_slot="name",
                         error="CLARIFY(name) required"
                     )
-                error_msg = f"No tools available for obligation type: {parsed_obligation.type}"
+                missing = self._build_missing_capability_payload(
+                    obligation_id=obligation_id,
+                    parsed_obligation=parsed_obligation,
+                    reason="no_matching_tools",
+                    candidate_tools=[]
+                )
+                error_msg = f"Missing capability: {missing.get('capability_name') or parsed_obligation.type}"
                 logger.warning(error_msg)
+                self.db.update_obligation_status(obligation_id, "failed")
                 return ExecutionResult(
                     obligation_id=obligation_id,
                     success=False,
-                    error=error_msg
+                    error=error_msg,
+                    inputs=parsed_obligation.raw_payload,
+                    outputs={"status": "missing_capability", "missing_capability": missing}
                 )
             
             # 2. Select best tool
@@ -239,12 +277,22 @@ class Conductor:
             )
             
             if not selected_tool:
-                error_msg = f"No suitable tool found for obligation: {parsed_obligation.type}"
+                # Candidates exist, but none accept the payload -> still a missing capability at the input-kind level.
+                missing = self._build_missing_capability_payload(
+                    obligation_id=obligation_id,
+                    parsed_obligation=parsed_obligation,
+                    reason="no_candidate_accepts_payload",
+                    candidate_tools=[t.name for t in candidate_tools],
+                )
+                error_msg = f"Missing capability: {missing.get('capability_name') or parsed_obligation.type}"
                 logger.warning(error_msg)
+                self.db.update_obligation_status(obligation_id, "failed")
                 return ExecutionResult(
                     obligation_id=obligation_id,
                     success=False,
-                    error=error_msg
+                    error=error_msg,
+                    inputs=parsed_obligation.raw_payload,
+                    outputs={"status": "missing_capability", "missing_capability": missing}
                 )
             
             # 3a. Pre-run supports: execute any tools that can establish selected tool preconditions
@@ -284,6 +332,12 @@ class Conductor:
             # 6. Store assertions in database
             for assertion in assertions:
                 self.db.create_assertion(assertion)
+
+            # Ensure tools provide a deterministic final_answer for downstream composition (trajectory step summaries).
+            try:
+                tool_outputs = self._ensure_final_answer(selected_tool.name, tool_outputs, assertions)
+            except Exception:
+                pass
             
             # 7. Update obligation status
             # Guardrails check (precedes clarify/truncated handling)
@@ -333,6 +387,65 @@ class Conductor:
                     outputs=tool_outputs,
                     clarify_slot=tool_outputs.get("clarify")
                 )
+
+            # Plan execution rule (composition-lite):
+            # If a tool emits a trajectory with steps that carry obligations, execute them in order.
+            sub_results: List[ExecutionResult] = []
+            try:
+                traj = (tool_outputs or {}).get("trajectory") or {}
+                steps = (traj or {}).get("steps") or []
+                if isinstance(steps, list):
+                    obligation_steps: List[Dict[str, Any]] = []
+                    for st in steps:
+                        if isinstance(st, dict) and isinstance(st.get("obligation"), dict):
+                            obligation_steps.append(st.get("obligation"))
+                    if obligation_steps:
+                        from ..core.obligations import ObligationParser
+                        parser = ObligationParser()
+                        for idx, ob_dict in enumerate(obligation_steps, start=1):
+                            step_type = (ob_dict or {}).get("type")
+                            step_payload = (ob_dict or {}).get("payload")
+                            if not step_type or not isinstance(step_payload, dict):
+                                raise ValueError("trajectory step obligation must have {type, payload}")
+                            # Create a DB obligation for the emitted step (for trace/debugging)
+                            step_ob = Obligation(
+                                id=f"{obligation_id}_STEP_{idx}",
+                                kind=str(step_type),
+                                details_jsonb=step_payload,
+                                status="active",
+                                event_id=None,
+                            )
+                            step_id = self.db.create_obligation(step_ob)
+                            parsed_step = parser.parse_obligations({"obligations": [ob_dict]})[0]
+                            sr = self._execute_plan_loop(step_id, parsed_step)
+                            sub_results.append(sr)
+                            if sr.clarify_slot or not sr.success:
+                                break
+                        # Attach step answers so parent can return a deterministic summary.
+                        try:
+                            import json as _json
+                            answers = []
+                            for sr in sub_results:
+                                fa = (sr.outputs or {}).get("final_answer") if isinstance(sr.outputs, dict) else None
+                                answers.append(fa if isinstance(fa, str) else None)
+                            tool_outputs = dict(tool_outputs)
+                            tool_outputs["executed_step_answers"] = answers
+                            tool_outputs["final_answer"] = _json.dumps(answers)
+                        except Exception:
+                            pass
+            except Exception as e:
+                self.db.update_obligation_status(obligation_id, "failed")
+                return ExecutionResult(
+                    obligation_id=obligation_id,
+                    success=False,
+                    tool_name=selected_tool.name,
+                    assertions=assertions,
+                    duration_ms=int((time.time() - start_time) * 1000),
+                    inputs=tool_inputs,
+                    outputs=dict(tool_outputs or {}, trajectory_exec_error=str(e)),
+                    sub_results=sub_results or None,
+                    error=f"Trajectory execution failed: {e}",
+                )
             # Guardrail enforcement for ACHIEVE.plan: run GuardrailChecker if constraints present
             if parsed_obligation.type == "ACHIEVE" and parsed_obligation.raw_payload.get("state") == "plan":
                 constraints = parsed_obligation.raw_payload.get("guardrails") or []
@@ -370,17 +483,127 @@ class Conductor:
                 assertions=assertions,
                 duration_ms=duration_ms,
                 inputs=tool_inputs,
-                outputs=tool_outputs
+                outputs=tool_outputs,
+                sub_results=sub_results or None
             )
             
         except Exception as e:
             error_msg = f"Plan loop failed for obligation {obligation_id}: {e}"
             logger.error(error_msg)
+            self.db.update_obligation_status(obligation_id, "failed")
             return ExecutionResult(
                 obligation_id=obligation_id,
                 success=False,
                 error=error_msg
             )
+
+    def _infer_required_input_kind(self, obligation_type: str, payload: Dict[str, Any]) -> Optional[str]:
+        """Infer the most likely tool input kind needed for this obligation payload."""
+        try:
+            if obligation_type == "REPORT":
+                k = (payload or {}).get("kind")
+                if k == "math":
+                    return "query.math"
+                if k == "count":
+                    return "query.count"
+                if k == "logic":
+                    return "query.logic"
+                if k == "status" or k == "status.name":
+                    return "query.status"
+                if isinstance(k, str) and k:
+                    # If it's already in "query.*" form, keep it.
+                    if k.startswith("query."):
+                        return k
+                    # Otherwise treat it as a first-class input kind (e.g., "normalize_url").
+                    return k
+                return None
+            if obligation_type == "ACHIEVE":
+                # ACHIEVE plan goals are handled by tools that consume plan.goal
+                if (payload or {}).get("state") == "plan":
+                    return "plan.goal"
+                return None
+            return None
+        except Exception:
+            return None
+
+    def _ensure_final_answer(self, tool_name: str, outputs: Dict[str, Any], assertions: List[Assertion]) -> Dict[str, Any]:
+        """Attach outputs['final_answer'] when it's missing, using deterministic rules."""
+        if not isinstance(outputs, dict):
+            return outputs
+        fa = outputs.get("final_answer")
+        if isinstance(fa, str) and fa != "":
+            return outputs
+        out = dict(outputs)
+        # Math
+        if tool_name == "EvalMath":
+            v = out.get("result")
+            if v is None:
+                for a in assertions or []:
+                    if getattr(a, "predicate", None) == "evaluatesTo":
+                        v = getattr(a, "object", None)
+                        break
+            if v is not None:
+                out["final_answer"] = str(v)
+                return out
+        # Count letters
+        if tool_name == "TextOps.CountLetters":
+            v = out.get("count")
+            if v is None:
+                for a in assertions or []:
+                    if getattr(a, "predicate", None) == "containsLetterCount":
+                        v = getattr(a, "object", None)
+                        break
+            if v is not None:
+                out["final_answer"] = str(v)
+                return out
+        # PeopleSQL
+        if tool_name == "PeopleSQL":
+            try:
+                import json as _json
+                people = out.get("people") or []
+                names = [p.get("name") for p in people if isinstance(p, dict) and p.get("name")]
+                out["final_answer"] = _json.dumps(names)
+                return out
+            except Exception:
+                pass
+        # Reasoning.Core
+        if tool_name == "Reasoning.Core":
+            if out.get("kind") == "logic.answer":
+                out["final_answer"] = "true" if out.get("value") else "false"
+                return out
+            if out.get("kind") == "plan":
+                try:
+                    import json as _json
+                    out["final_answer"] = _json.dumps((out.get("trajectory") or {}).get("steps", []))
+                    return out
+                except Exception:
+                    pass
+        return out
+
+    def _build_missing_capability_payload(
+        self,
+        obligation_id: str,
+        parsed_obligation: ParsedObligation,
+        reason: str,
+        candidate_tools: List[str],
+    ) -> Dict[str, Any]:
+        """Build a structured missing-capability payload for downstream automation (e.g., toolsmith)."""
+        payload = parsed_obligation.raw_payload or {}
+        required_kind = self._infer_required_input_kind(parsed_obligation.type, payload)
+        capability_name = f"{parsed_obligation.type}:{required_kind}" if required_kind else f"{parsed_obligation.type}"
+        # Include a stable missing_capability_id so downstream steps can de-dupe/cache.
+        missing_capability_id = f"missing:{capability_name}"
+        return {
+            "type": "missing_capability",
+            "missing_capability_id": missing_capability_id,
+            "capability_name": capability_name,
+            "required_input_kind": required_kind,
+            "obligation_id": obligation_id,
+            "obligation_type": parsed_obligation.type,
+            "sample_payload": payload,
+            "reason": reason,
+            "candidate_tools": candidate_tools,
+        }
     
     def _execute_verify_loop(self, execution_results: List[ExecutionResult]) -> VerificationResult:
         """
@@ -604,6 +827,14 @@ class Conductor:
         for result in execution_results:
             if not result.success:
                 continue
+
+            # Generic fallback: allow tools to directly provide a deterministic final answer.
+            # This is important for newly-added tools (e.g., toolsmith-generated) so we don't
+            # have to hardcode every tool name here.
+            if isinstance(result.outputs, dict):
+                fa = result.outputs.get("final_answer")
+                if isinstance(fa, str) and fa != "":
+                    return fa
             
             # If we have a stored name, return it for status.name
             for a in (result.assertions or []):
@@ -648,19 +879,32 @@ class Conductor:
     
     def _calculate_metrics(self, execution_results: List[ExecutionResult], verification_result: VerificationResult, total_duration: int) -> Dict:
         """Calculate request metrics."""
-        successful_obligations = sum(1 for r in execution_results if r.success)
-        total_tool_runs = len(execution_results)
+        flat = self._flatten_execution_results(execution_results)
+        successful_obligations = sum(1 for r in flat if r.success)
+        total_tool_runs = len(flat)
         
         return {
             "total_latency_ms": total_duration,
             "obligation_count": len(execution_results),
             "tool_run_count": total_tool_runs,
-            "assertion_count": sum(len(r.assertions or []) for r in execution_results),
+            "assertion_count": sum(len(r.assertions or []) for r in flat),
             "verification_passed": verification_result.passed,
             "escalation_count": 0,  # TODO: implement escalation tracking
             "clarify_count": 0,     # TODO: implement clarification tracking
             "success_rate": successful_obligations / max(total_tool_runs, 1)
         }
+
+    def _flatten_execution_results(self, execution_results: List[ExecutionResult]) -> List[ExecutionResult]:
+        """Flatten nested execution results (trajectory-executed steps)."""
+        out: List[ExecutionResult] = []
+        for er in execution_results or []:
+            if not er:
+                continue
+            out.append(er)
+            subs = getattr(er, "sub_results", None) or []
+            if subs:
+                out.extend(self._flatten_execution_results(subs))
+        return out
     
     def _create_error_response(self, trace_id: str, error: str) -> Dict:
         """Create error response."""
@@ -678,8 +922,10 @@ class Conductor:
     
     def _serialize_obligation(self, obligation_id: str) -> Dict:
         """Serialize obligation for trace."""
-        # This would normally fetch from database
-        return {"id": obligation_id, "status": "resolved"}
+        ob = self.db.get_obligation(obligation_id)
+        if not ob:
+            return {"id": obligation_id, "status": "unknown"}
+        return {"id": ob.id, "type": ob.kind, "status": ob.status, "payload": ob.details_jsonb}
     
     def _serialize_execution_result(self, result: ExecutionResult) -> Dict:
         """Serialize execution result for trace."""

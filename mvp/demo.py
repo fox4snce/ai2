@@ -2,7 +2,7 @@
 """
 MVP Demo Script
 
-This script demonstrates the Obligations → Operations architecture
+This script demonstrates the Obligations -> Operations architecture
 in action with various example queries.
 """
 
@@ -11,10 +11,12 @@ import os
 import json
 from datetime import datetime
 
-# Add src to path
-sys.path.append('src')
+# Ensure the mvp/ directory is on sys.path so the `src` package is importable
+HERE = os.path.dirname(__file__)
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
 
-from main import MVPAPI
+from src.main import MVPAPI
 
 
 def print_separator(title=""):
@@ -35,7 +37,7 @@ def print_trace_summary(trace):
     print(f"Obligations: {len(trace['obligations'])}")
     print(f"Tool Runs: {len(trace['tool_runs'])}")
     print(f"Assertions: {len(trace['assertions'])}")
-    print(f"Verification: {'✓' if trace['verification']['passed'] else '✗'}")
+    print(f"Verification: {'OK' if trace['verification']['passed'] else 'FAIL'}")
     print(f"Latency: {trace['metrics']['total_latency_ms']}ms")
     print(f"Success Rate: {trace['metrics']['success_rate']:.2%}")
 
@@ -109,7 +111,7 @@ def demo_error_handling():
         print(f"\nQ: '{query}'")
         trace = api.ask_with_trace(query)
         print(f"A: {trace['final_answer']}")
-        print(f"Verification: {'✓' if trace['verification']['passed'] else '✗'}")
+        print(f"Verification: {'OK' if trace['verification']['passed'] else 'FAIL'}")
     
     api.close()
 
@@ -137,7 +139,7 @@ def demo_performance():
         
         print(f"Query: {query}")
         print(f"  Latency: {latency}ms")
-        print(f"  Success: {'✓' if success else '✗'}")
+        print(f"  Success: {'OK' if success else 'FAIL'}")
         
         total_latency += latency
         if success:
@@ -154,9 +156,9 @@ def demo_performance():
 
 def main():
     """Run all demos."""
-    print_separator("MVP OBLIGATIONS → OPERATIONS DEMO")
+    print_separator("MVP OBLIGATIONS -> OPERATIONS DEMO")
     print("This demo showcases the MVP implementation of the")
-    print("Obligations → Operations architecture.")
+    print("Obligations -> Operations architecture.")
     print(f"Started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     
     try:

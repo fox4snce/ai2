@@ -89,7 +89,7 @@ def main():
     
     if math_success and count_success:
         print("\nALL TESTS PASSED")
-        print("The MVP Obligations → Operations system is working correctly!")
+        print("The MVP Obligations -> Operations system is working correctly!")
         return 0
     else:
         print("\nSOME TESTS FAILED")

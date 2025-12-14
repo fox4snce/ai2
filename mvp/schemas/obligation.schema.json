@@ -150,7 +150,13 @@
     "discoverOpPayload": {
       "type": "object",
       "properties": {
-        "goal": {"type": "string"},
+        "goal": {
+          "description": "Goal can be a simple string or a structured missing-capability payload",
+          "anyOf": [
+            {"type": "string"},
+            {"type": "object"}
+          ]
+        },
         "domain": {"type": "string"},
         "constraints": {"type": "object"}
       },

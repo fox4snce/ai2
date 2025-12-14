@@ -1,0 +1,31 @@
+name: ReportNormalizeEmail
+description: "Normalizes email addresses for reporting obligations. Trims whitespace and lowercases the address."
+version: "1.0.0"
+consumes:
+  - kind: "normalize_email"
+    schema:
+      type: object
+      properties:
+        email:
+          type: string
+        kind:
+          type: string
+          enum: ["normalize_email"]
+      required: ["email", "kind"]
+produces:
+  - assertion:
+      subject: "Email"
+      predicate: "normalizedTo"
+      object: "string"
+satisfies:
+  - "REPORT(normalize_email)"
+preconditions:
+  - "input_has_email"
+postconditions:
+  - "email_is_normalized"
+cost: "tiny"
+reliability: "high"
+latency_ms: 2
+implementation:
+  type: "python"
+  entry_point: "src.tools_generated.report_normalize_email.run"

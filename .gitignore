@@ -6,6 +6,8 @@ mvp/.venv/
 **/.pytest_cache/
 **/.ruff_cache/
 **/.mypy_cache/
+.toolsmith/
+.toolsmith/** 
 .DS_Store
 .idea/
 .vscode/

@@ -1,0 +1,8 @@
+#
+# Dev/test requirements
+#
+# Keep runtime deps in requirements.txt; add test tooling here.
+#
+pytest>=8.0.0
+requests>=2.31.0
+

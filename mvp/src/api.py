@@ -35,6 +35,9 @@ def classify_status(trace: Dict[str, Any]) -> int:
         return 200
     if status == "failed":
         # Differentiate no tool vs crash vs truncated budget vs guardrail failure
+        # Preferred signal: structured missing_capabilities
+        if isinstance(trace.get("missing_capabilities"), list) and len(trace.get("missing_capabilities")) > 0:
+            return 422
         err = trace.get("final_answer", "")
         # Inspect tool_runs
         truncated = False
@@ -44,6 +47,8 @@ def classify_status(trace: Dict[str, Any]) -> int:
             if (out or {}).get("status") == "truncated":
                 truncated = True
                 break
+            if (out or {}).get("status") == "missing_capability":
+                return 422
             why_not = (out or {}).get("why_not") or []
             if "guardrail_failed" in why_not:
                 guardrail_failed = True

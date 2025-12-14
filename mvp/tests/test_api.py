@@ -67,6 +67,12 @@ def test_api_endpoints():
             "obligations": [{"type": "REPORT", "payload": {"kind": "query.astronauts"}}]
         })
         assert r.status_code == 422
+        data = r.json()
+        assert isinstance(data.get("missing_capabilities"), list)
+        assert len(data["missing_capabilities"]) >= 1
+        # Conductor should emit at least one DISCOVER_OP obligation for toolsmithing
+        assert isinstance(data.get("emitted_obligations"), list)
+        assert any((o or {}).get("type") == "DISCOVER_OP" for o in data["emitted_obligations"])
 
         # ACHIEVE + REPORT name flow 200
         r = requests.post(BASE + "/v1/obligations/execute", json={

@@ -1,0 +1,33 @@
+name: ReportNormalizeURL
+description: "Normalizes user-provided URLs into a canonical HTTPS form (lowercase host, remove default ports, sort query params, remove fragments and trailing slash)."
+version: "1.0.0"
+consumes:
+  - kind: normalize_url
+    schema:
+      type: object
+      properties:
+        url:
+          type: string
+      required:
+        - url
+produces:
+  - assertion:
+      subject: URL
+      predicate: normalizedTo
+      object: string
+satisfies:
+  - "REPORT(normalize_url)"
+preconditions:
+  - url_is_string
+postconditions:
+  - url_normalized
+cost: tiny
+reliability: high
+latency_ms: 5
+verify_mode: blocking
+capability_tier: safe
+supports:
+  - url_canonical
+implementation:
+  type: python
+  entry_point: src.tools_generated.report_normalize_url.run

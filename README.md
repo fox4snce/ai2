@@ -17,7 +17,8 @@ This is a minimal viable implementation of the Obligations → Operations archit
 cd mvp
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-python -m pip install -r requirements.txt
+# Note: requirements.txt lives at the repo root, not inside mvp/
+python -m pip install -r ..\requirements.txt
 ```
 
 ### 2) Run the API server
@@ -53,6 +54,12 @@ python scripts/smoke_api.py
 ```powershell
 python -m pytest tests/test_api.py -q
 ```
+
+## Writing obligations JSON
+
+- Guide + working examples: `mvp/ops/obligations.md`
+- Schema: `mvp/schemas/obligation.schema.json`
+- Validator: `mvp/scripts/validate_obligations.py`
 
 ### 4. Request Flow
 1. User: "What's 2+2?"

@@ -28,11 +28,11 @@
         "value": true,
         "trajectory": {
           "steps": [
-            {"op": "infer", "rule": "parent∘parent→grandparent", "bindings": {"X": "Alice", "Y": "Bob", "Z": "Cara"}}
+            {"op": "infer", "rule": "parent_o_parent->grandparent", "bindings": {"X": "Alice", "Y": "Bob", "Z": "Cara"}}
           ],
           "alt_paths": [],
           "metrics": {"depth_used": 1, "nodes_expanded": 1, "time_ms": 11},
-          "rules_fired": ["parent∘parent→grandparent"],
+          "rules_fired": ["parent_o_parent->grandparent"],
           "why_not": []
         },
         "capabilities_satisfied": ["REPORT.logic"]

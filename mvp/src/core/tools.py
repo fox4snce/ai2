@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import logging
 import os
+import importlib
 
 logger = logging.getLogger(__name__)
 
@@ -193,6 +194,13 @@ class ToolRegistry:
     
     def _payload_provides_input(self, input_kind: str, payload: Dict) -> bool:
         """Check if payload provides the required input kind."""
+        # General case: if the obligation payload's kind matches the tool input kind, accept.
+        # This is important for newly added query.* kinds (e.g., query.astronauts) that aren't hard-coded.
+        try:
+            if isinstance(payload, dict) and isinstance(payload.get("kind"), str) and payload.get("kind") == input_kind:
+                return True
+        except Exception:
+            pass
         if input_kind == "query.math":
             return payload.get("kind") == "math" and "expr" in payload
         elif input_kind == "query.people":
@@ -267,6 +275,28 @@ class ToolExecutor:
             "Prep.Stub": self._mock_prep_stub,
             "GuardrailChecker": self._mock_guardrail_checker
         }
+
+        # Additionally, allow python tools to be loaded dynamically from their contract implementation.entry_point.
+        # This is required for toolsmith-generated tools.
+        for tool in (self.registry.tools or {}).values():
+            impl = getattr(tool, "implementation", {}) or {}
+            if impl.get("type") != "python":
+                continue
+            entry = impl.get("entry_point")
+            if not isinstance(entry, str) or "." not in entry:
+                continue
+            # Don't override builtins unless explicitly desired later.
+            if tool.name in self.tool_implementations:
+                continue
+            module_name, func_name = entry.rsplit(".", 1)
+            try:
+                mod = importlib.import_module(module_name)
+                fn = getattr(mod, func_name)
+                if callable(fn):
+                    self.tool_implementations[tool.name] = fn
+                    logger.info(f"Loaded python tool implementation for {tool.name} from {entry}")
+            except Exception as e:
+                logger.warning(f"Failed to import python tool {tool.name} entry_point={entry}: {e}")
 
     def _load_sandbox_policy(self):
         try:
@@ -459,7 +489,8 @@ class ToolExecutor:
                             dt = int((_t.time() - t0) * 1000)
                             return {"status": "truncated", "kind": "logic.answer", "value": None, "trajectory": {"steps": steps, "alt_paths": alt_paths, "metrics": {"depth_used": 1, "nodes_expanded": nodes, "time_ms": dt}}, "capabilities_satisfied": ["REPORT.logic"]}
                     if (y, z) in edges:
-                        st = {"op": "infer", "rule": "parent∘parent→grandparent", "bindings": {"X": x, "Y": y, "Z": z}}
+                        # Keep rule names ASCII-only so traces print cleanly on Windows consoles.
+                        st = {"op": "infer", "rule": "parent_o_parent->grandparent", "bindings": {"X": x, "Y": y, "Z": z}}
                         (steps if not found else alt_paths).append(st)
                         found = True
                 if found:
@@ -480,6 +511,20 @@ class ToolExecutor:
         elif mode == "planning":
             goal = inputs.get("goal", {})
             pred = (goal or {}).get("predicate")
+            # Demo: a plan whose steps are literal obligations the conductor can execute deterministically.
+            # goal.args.steps is a list of {type, payload} obligations.
+            if pred == "demo.chain":
+                args = (goal or {}).get("args", {}) or {}
+                steps_in = args.get("steps", [])
+                if not isinstance(steps_in, list) or not all(isinstance(s, dict) for s in steps_in):
+                    return {"error": "invalid_demo_chain_steps"}
+                steps = [{"obligation": s} for s in steps_in]
+                return {
+                    "kind": "plan",
+                    "trajectory": {"steps": steps, "metrics": {"depth_used": 1, "beam_used": 1, "time_ms": 0}},
+                    "feasible": True,
+                    "capabilities_satisfied": ["ACHIEVE.plan"],
+                }
             if pred == "event.scheduled":
                 steps = ["ResolvePerson", "CheckCalendar", "ProposeSlots", "CreateEvent"]
                 # do not write assertions; plan only

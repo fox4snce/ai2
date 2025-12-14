@@ -1,0 +1,7 @@
+{
+  "obligations": [
+    { "type": "REPORT", "payload": { "kind": "normalize_email", "email": "JEFF@Example.COM " } }
+  ]
+}
+
+

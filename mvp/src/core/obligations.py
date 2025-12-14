@@ -29,7 +29,7 @@ class ObligationPayload:
     claim: Optional[str] = None
     target: Optional[str] = None
     slot: Optional[str] = None
-    goal: Optional[str] = None
+    goal: Optional[Any] = None
     value: Optional[str] = None
     query: Optional[Dict] = None
     budgets: Optional[Dict] = None
@@ -242,8 +242,11 @@ class ObligationBuilder:
         }
     
     @staticmethod
-    def discover_op(goal: str) -> Dict:
-        """Build a discover operation obligation."""
+    def discover_op(goal: Any) -> Dict:
+        """Build a discover operation obligation.
+
+        goal can be a simple string or a structured object (e.g., a missing-capability payload).
+        """
         return {
             "type": "DISCOVER_OP",
             "payload": {
