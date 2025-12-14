@@ -1,5 +1,5 @@
-name: EmailOps.Extract
-description: Extracts email addresses from a text blob deterministically
+name: EmailOps.ExtractStrict
+description: Extract emails with stricter validation (fewer false positives, higher latency)
 version: 1.0.0
 consumes:
   - kind: email.extract
@@ -20,15 +20,15 @@ produces:
       object: array
 satisfies:
   - REPORT(email.extract)
-cost: tiny
+cost: low
 reliability: high
-latency_ms: 5
+latency_ms: 20
 verify_mode: non_blocking
 capability_tier: safe
 supports:
-  - fast_regex
+  - rfcish
 implementation:
   type: python
-  entry_point: src.tools.email_ops.extract_emails
+  entry_point: src.tools.email_ops.extract_emails_strict
 
 

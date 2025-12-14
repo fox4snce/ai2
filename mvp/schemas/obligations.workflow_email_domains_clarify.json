@@ -1,0 +1,21 @@
+{
+  "obligations": [
+    {
+      "type": "ACHIEVE",
+      "payload": {
+        "state": "plan",
+        "mode": "planning",
+        "goal": {
+          "predicate": "workflow.email_domains",
+          "args": {
+            "text": "No emails here, just words.",
+            "on_no_emails": "clarify"
+          }
+        },
+        "budgets": { "max_depth": 1, "beam": 3, "time_ms": 50 }
+      }
+    }
+  ]
+}
+
+

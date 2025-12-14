@@ -532,6 +532,7 @@ class ToolExecutor:
                 args = (goal or {}).get("args", {}) or {}
                 seq = args.get("sequence", [])
                 inputs_map = args.get("inputs", {}) or {}
+                constraints = args.get("constraints", {}) or {}
                 contracts = inputs.get("tool_contracts", []) or []
 
                 if not isinstance(seq, list) or not all(isinstance(s, dict) for s in seq):
@@ -555,6 +556,30 @@ class ToolExecutor:
                         return False
                     target = f"{want_type}({want_kind})"
                     return target in sat or want_type in sat
+
+                def _supports_constraints(tool: dict) -> bool:
+                    if not isinstance(constraints, dict) or not constraints:
+                        return True
+                    req = constraints.get("requires") or []
+                    if req and not isinstance(req, list):
+                        return False
+                    supports = tool.get("supports") or []
+                    if supports is None:
+                        supports = []
+                    if not isinstance(supports, list):
+                        return False
+                    supports_set = {str(s) for s in supports if isinstance(s, str)}
+                    for r in req:
+                        if isinstance(r, str) and r not in supports_set:
+                            return False
+                    max_lat = constraints.get("max_latency_ms")
+                    if max_lat is not None:
+                        try:
+                            if int(tool.get("latency_ms") or 0) > int(max_lat):
+                                return False
+                        except Exception:
+                            return False
+                    return True
 
                 def _consumes_kind(tool: dict, want_kind: str) -> bool:
                     consumes = tool.get("consumes") or []
@@ -596,7 +621,7 @@ class ToolExecutor:
                     for t in contracts:
                         if not isinstance(t, dict):
                             continue
-                        if _consumes_kind(t, want_kind) and _matches_satisfies(t, want_type, want_kind):
+                        if _consumes_kind(t, want_kind) and _matches_satisfies(t, want_type, want_kind) and _supports_constraints(t):
                             candidates.append(t)
                     # Even if no tool exists, still emit the step obligation so the conductor can
                     # attempt execution and trigger the DISCOVER_OP/toolsmith loop mid-plan.
@@ -675,6 +700,128 @@ class ToolExecutor:
                     "feasible": True,
                     "capabilities_satisfied": ["ACHIEVE.plan"],
                     "unresolved_steps": missing_steps,
+                }
+
+            # Higher-level workflow: extract emails -> normalize batch -> count distinct domains
+            # Adds branching on empty extraction and supports constraint-based tool choice for the extractor.
+            if pred == "workflow.email_domains":
+                args = (goal or {}).get("args", {}) or {}
+                text = args.get("text", "")
+                policy = (args.get("on_no_emails") or "clarify").strip().lower()
+                denylist = args.get("denylist_domains") or []
+                constraints = args.get("constraints", {}) or {}
+                contracts = inputs.get("tool_contracts", []) or []
+
+                if not isinstance(text, str):
+                    return {"error": "invalid_text"}
+
+                def _score(c: dict) -> tuple:
+                    rel = {"high": 3, "medium": 2, "low": 1}.get(str(c.get("reliability") or "medium"), 2)
+                    cost = {"tiny": 4, "low": 3, "medium": 2, "high": 1}.get(str(c.get("cost") or "medium"), 2)
+                    lat = int(c.get("latency_ms") or 100)
+                    name = str(c.get("name") or "")
+                    return (-rel, -cost, lat, name)
+
+                def _matches_satisfies(tool: dict, want_type: str, want_kind: str) -> bool:
+                    sat = tool.get("satisfies") or []
+                    if not isinstance(sat, list):
+                        return False
+                    target = f"{want_type}({want_kind})"
+                    return target in sat or want_type in sat
+
+                def _consumes_kind(tool: dict, want_kind: str) -> bool:
+                    consumes = tool.get("consumes") or []
+                    if not isinstance(consumes, list):
+                        return False
+                    return any(isinstance(c, dict) and c.get("kind") == want_kind for c in consumes)
+
+                # helper: choose tool name for a REPORT(kind) deterministically with constraints
+                def _choose_report_tool(kind: str) -> str | None:
+                    want_type = "REPORT"
+                    want_kind = kind
+                    candidates = []
+                    for t in contracts:
+                        if not isinstance(t, dict):
+                            continue
+                        if not _consumes_kind(t, want_kind):
+                            continue
+                        if not _matches_satisfies(t, want_type, want_kind):
+                            continue
+                        # Apply constraint filtering like in capability.sequence
+                        if isinstance(constraints, dict) and constraints:
+                            req = constraints.get("requires") or []
+                            supports = t.get("supports") or []
+                            supports_set = {str(s) for s in supports if isinstance(s, str)} if isinstance(supports, list) else set()
+                            if isinstance(req, list):
+                                if any(isinstance(r, str) and r not in supports_set for r in req):
+                                    continue
+                            max_lat = constraints.get("max_latency_ms")
+                            if max_lat is not None:
+                                try:
+                                    if int(t.get("latency_ms") or 0) > int(max_lat):
+                                        continue
+                                except Exception:
+                                    continue
+                        candidates.append(t)
+                    if not candidates:
+                        return None
+                    candidates.sort(key=_score)
+                    return candidates[0].get("name")
+
+                extractor_tool = _choose_report_tool("email.extract")
+                normalizer_tool = _choose_report_tool("normalize_emails")
+                counter_tool = _choose_report_tool("email.count_distinct_domains")
+
+                # If any required tool is missing, emit the step anyway (mid-plan toolsmith can handle it).
+                steps = []
+                steps.append(
+                    {
+                        "obligation": {"type": "REPORT", "payload": {"kind": "email.extract", "text": text}},
+                        "derived_from": {"tool": extractor_tool},
+                    }
+                )
+
+                # Branch: if STEP_1.emails is empty -> policy action.
+                if policy == "clarify":
+                    then_steps = [{"obligation": {"type": "CLARIFY", "payload": {"slot": "text"}}}]
+                elif policy == "fail":
+                    then_steps = [{"obligation": {"type": "REPORT", "payload": {"kind": "flow.fail", "message": "no_emails_found"}}}]
+                else:
+                    then_steps = [{"obligation": {"type": "REPORT", "payload": {"kind": "flow.fail", "message": "no_emails_found"}}}]
+
+                else_steps = [
+                    {
+                        "obligation": {"type": "REPORT", "payload": {"kind": "normalize_emails", "emails": {"$ref": "STEP_1.emails"}}},
+                        "derived_from": {"tool": normalizer_tool},
+                    },
+                    {
+                        "obligation": {
+                            "type": "REPORT",
+                            "payload": {
+                                "kind": "email.count_distinct_domains",
+                                "emails": {"$ref": "STEP_2.normalized_emails"},
+                                **({"denylist_domains": denylist} if isinstance(denylist, list) and denylist else {}),
+                            },
+                        },
+                        "derived_from": {"tool": counter_tool},
+                    },
+                ]
+
+                steps.append(
+                    {
+                        "branch": {
+                            "when": {"ref": "STEP_1.emails", "op": "empty"},
+                            "then": then_steps,
+                            "else": else_steps,
+                        }
+                    }
+                )
+
+                return {
+                    "kind": "plan",
+                    "trajectory": {"steps": steps, "metrics": {"depth_used": 1, "beam_used": 1, "time_ms": 0}},
+                    "feasible": True,
+                    "capabilities_satisfied": ["ACHIEVE.plan"],
                 }
             if pred == "event.scheduled":
                 steps = ["ResolvePerson", "CheckCalendar", "ProposeSlots", "CreateEvent"]

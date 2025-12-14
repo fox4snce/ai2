@@ -14,6 +14,10 @@ consumes:
           type: array
           items:
             type: string
+        denylist_domains:
+          type: array
+          items:
+            type: string
       required: ["kind", "emails"]
 produces:
   - assertion:

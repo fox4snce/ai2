@@ -1,0 +1,32 @@
+name: Flow.Fail
+description: Deterministic failure tool used for policy-driven branching (returns error)
+version: 1.0.0
+consumes:
+  - kind: flow.fail
+    schema:
+      type: object
+      additionalProperties: false
+      properties:
+        kind:
+          type: string
+          enum: ["flow.fail"]
+        message:
+          type: string
+      required: ["kind", "message"]
+produces:
+  - assertion:
+      subject: Flow
+      predicate: failedWith
+      object: string
+satisfies:
+  - REPORT(flow.fail)
+cost: tiny
+reliability: high
+latency_ms: 1
+verify_mode: non_blocking
+capability_tier: safe
+implementation:
+  type: python
+  entry_point: src.tools.flow.fail
+
+

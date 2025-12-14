@@ -176,7 +176,12 @@ class Conductor:
         logger.info(f"Request {trace_id} completed in {total_duration}ms")
         return trace
     
-    def _execute_plan_loop(self, obligation_id: str, parsed_obligation: ParsedObligation) -> ExecutionResult:
+    def _execute_plan_loop(
+        self,
+        obligation_id: str,
+        parsed_obligation: ParsedObligation,
+        forced_tool_name: Optional[str] = None,
+    ) -> ExecutionResult:
         """
         Execute the plan loop for a single obligation.
         
@@ -271,12 +276,21 @@ class Conductor:
                     outputs={"status": "missing_capability", "missing_capability": missing}
                 )
             
-            # 2. Select best tool
-            selected_tool = self.registry.select_best_tool(
-                parsed_obligation.type,
-                parsed_obligation.raw_payload,
-                selection_seed=obligation_id
-            )
+            # 2. Select best tool (or honor an explicit plan-chosen tool, if provided and valid)
+            selected_tool: Optional[ToolContract] = None
+            if forced_tool_name:
+                ft = self.registry.get_tool(str(forced_tool_name))
+                if ft and any(t.name == ft.name for t in candidate_tools):
+                    # Ensure the forced tool actually accepts the payload shape.
+                    ok, _why = self.registry.validate_tool_inputs(ft, parsed_obligation.raw_payload)
+                    if ok:
+                        selected_tool = ft
+            if selected_tool is None:
+                selected_tool = self.registry.select_best_tool(
+                    parsed_obligation.type,
+                    parsed_obligation.raw_payload,
+                    selection_seed=obligation_id
+                )
             
             if not selected_tool:
                 # Candidates exist, but none accept the payload -> still a missing capability at the input-kind level.
@@ -398,66 +412,111 @@ class Conductor:
             try:
                 traj = (tool_outputs or {}).get("trajectory") or {}
                 steps = (traj or {}).get("steps") or []
-                if isinstance(steps, list):
-                    obligation_steps: List[Dict[str, Any]] = []
-                    for st in steps:
-                        if isinstance(st, dict) and isinstance(st.get("obligation"), dict):
-                            obligation_steps.append(st.get("obligation"))
-                    if obligation_steps:
-                        # Template mechanism: allow later steps to reference earlier step outputs.
-                        # Format: {{STEP_1.result}} where "1" is the 1-based step index within this trajectory,
-                        # and "result" is a key in that step's tool outputs.
-                        token_re = re.compile(r"\{\{\s*STEP_(\d+)\.([A-Za-z0-9_]+)\s*\}\}")
+                # Only execute trajectories that explicitly contain obligation/branch steps.
+                # (Reasoning.Core also emits trajectories for proofs and other non-executable traces.)
+                has_executable_steps = (
+                    isinstance(steps, list)
+                    and any(
+                        isinstance(st, dict)
+                        and (isinstance(st.get("obligation"), dict) or isinstance(st.get("branch"), dict))
+                        for st in steps
+                    )
+                )
+                trajectory_terminal: Optional[ExecutionResult] = None
+                if has_executable_steps:
+                    # Template mechanism: allow later steps to reference earlier step outputs.
+                    # Format: {{STEP_1.result}} where "1" is the 1-based executed-obligation index within this trajectory,
+                    # and "result" is a key in that step's tool outputs.
+                    token_re = re.compile(r"\{\{\s*STEP_(\d+)\.([A-Za-z0-9_]+)\s*\}\}")
 
-                        # Shape reference mechanism: allow structured values (lists/dicts) to come from prior outputs.
-                        # Format: {"$ref": "STEP_1.emails"} where "emails" is a key in that step's outputs.
-                        ref_re = re.compile(r"^STEP_(\d+)\.([A-Za-z0-9_]+)$")
+                    # Shape reference mechanism: allow structured values (lists/dicts) to come from prior outputs.
+                    # Format: {"$ref": "STEP_1.emails"} where "emails" is a key in that step's outputs.
+                    ref_re = re.compile(r"^STEP_(\d+)\.([A-Za-z0-9_]+)$")
 
-                        def _resolve_templates(obj: Any, prior_outputs: List[Dict[str, Any]]) -> Any:
-                            # Structured ref: replace the whole object, not a string substitution.
-                            if isinstance(obj, dict) and set(obj.keys()) == {"$ref"} and isinstance(obj.get("$ref"), str):
-                                m = ref_re.match(obj["$ref"].strip())
-                                if not m:
-                                    return obj
-                                idx = int(m.group(1))
-                                key = m.group(2)
-                                if idx < 1 or idx > len(prior_outputs):
-                                    return obj
-                                val = (prior_outputs[idx - 1] or {}).get(key)
-                                # Deep-copy to avoid accidental mutation across steps.
-                                return copy.deepcopy(val)
-                            if isinstance(obj, dict):
-                                return {k: _resolve_templates(v, prior_outputs) for k, v in obj.items()}
-                            if isinstance(obj, list):
-                                return [_resolve_templates(v, prior_outputs) for v in obj]
-                            if not isinstance(obj, str):
+                    def _resolve_templates(obj: Any, prior_outputs: List[Dict[str, Any]]) -> Any:
+                        # Structured ref: replace the whole object, not a string substitution.
+                        if isinstance(obj, dict) and set(obj.keys()) == {"$ref"} and isinstance(obj.get("$ref"), str):
+                            m = ref_re.match(obj["$ref"].strip())
+                            if not m:
                                 return obj
+                            idx = int(m.group(1))
+                            key = m.group(2)
+                            if idx < 1 or idx > len(prior_outputs):
+                                return obj
+                            val = (prior_outputs[idx - 1] or {}).get(key)
+                            return copy.deepcopy(val)
+                        if isinstance(obj, dict):
+                            return {k: _resolve_templates(v, prior_outputs) for k, v in obj.items()}
+                        if isinstance(obj, list):
+                            return [_resolve_templates(v, prior_outputs) for v in obj]
+                        if not isinstance(obj, str):
+                            return obj
 
-                            def _replace(match: re.Match) -> str:
-                                idx = int(match.group(1))
-                                key = match.group(2)
-                                if idx < 1 or idx > len(prior_outputs):
-                                    return match.group(0)
-                                val = (prior_outputs[idx - 1] or {}).get(key)
-                                if val is None:
-                                    return match.group(0)
-                                return str(val)
+                        def _replace(match: re.Match) -> str:
+                            idx = int(match.group(1))
+                            key = match.group(2)
+                            if idx < 1 or idx > len(prior_outputs):
+                                return match.group(0)
+                            val = (prior_outputs[idx - 1] or {}).get(key)
+                            if val is None:
+                                return match.group(0)
+                            return str(val)
 
-                            return token_re.sub(_replace, obj)
+                        return token_re.sub(_replace, obj)
 
-                        from ..core.obligations import ObligationParser
-                        parser = ObligationParser()
-                        prior_step_outputs: List[Dict[str, Any]] = []
-                        for idx, ob_dict in enumerate(obligation_steps, start=1):
+                    def _get_ref_value(ref: str, prior_outputs: List[Dict[str, Any]]) -> Any:
+                        m = ref_re.match((ref or "").strip())
+                        if not m:
+                            return None
+                        idx = int(m.group(1))
+                        key = m.group(2)
+                        if idx < 1 or idx > len(prior_outputs):
+                            return None
+                        return (prior_outputs[idx - 1] or {}).get(key)
+
+                    def _is_empty(val: Any) -> bool:
+                        if val is None:
+                            return True
+                        if isinstance(val, (list, tuple, dict, str)):
+                            return len(val) == 0
+                        return False
+
+                    from ..core.obligations import ObligationParser
+                    parser = ObligationParser()
+                    prior_step_outputs: List[Dict[str, Any]] = []
+
+                    # Worklist supports branching steps that insert obligations dynamically.
+                    work: List[Dict[str, Any]] = [st for st in steps if isinstance(st, dict)]
+                    exec_idx = 0
+                    i = 0
+                    while i < len(work):
+                        st = work[i]
+                        if isinstance(st.get("obligation"), dict):
+                            ob_dict = st.get("obligation") or {}
                             step_type = (ob_dict or {}).get("type")
                             step_payload = (ob_dict or {}).get("payload")
                             if not step_type or not isinstance(step_payload, dict):
                                 raise ValueError("trajectory step obligation must have {type, payload}")
 
-                            # Keep the planner's trajectory visible in traces (do not mutate it).
+                            # Support CLARIFY steps without needing a tool.
+                            if str(step_type) == "CLARIFY":
+                                slot = (step_payload or {}).get("slot")
+                                sr = ExecutionResult(
+                                    obligation_id=f"{obligation_id}_STEP_{exec_idx+1}",
+                                    success=False,
+                                    tool_name=None,
+                                    outputs={"clarify": slot, "final_answer": None},
+                                    clarify_slot=str(slot) if isinstance(slot, str) and slot else None,
+                                    inputs=step_payload,
+                                )
+                                sub_results.append(sr)
+                                prior_step_outputs.append(sr.outputs or {})
+                                break
+
+                            exec_idx += 1
                             resolved_payload = _resolve_templates(copy.deepcopy(step_payload), prior_step_outputs)
                             step_ob = Obligation(
-                                id=f"{obligation_id}_STEP_{idx}",
+                                id=f"{obligation_id}_STEP_{exec_idx}",
                                 kind=str(step_type),
                                 details_jsonb=resolved_payload,
                                 status="active",
@@ -465,26 +524,70 @@ class Conductor:
                             )
                             step_id = self.db.create_obligation(step_ob)
                             parsed_step = parser.parse_obligations({"obligations": [{"type": step_type, "payload": resolved_payload}]})[0]
-                            sr = self._execute_plan_loop(step_id, parsed_step)
+                            preferred = None
+                            try:
+                                preferred = ((st.get("derived_from") or {}) if isinstance(st, dict) else {}).get("tool")
+                            except Exception:
+                                preferred = None
+                            sr = self._execute_plan_loop(step_id, parsed_step, forced_tool_name=preferred if isinstance(preferred, str) and preferred else None)
                             sub_results.append(sr)
-                            if sr.success and isinstance(sr.outputs, dict):
-                                prior_step_outputs.append(sr.outputs)
-                            else:
-                                prior_step_outputs.append({})
+                            prior_step_outputs.append(sr.outputs if (sr.success and isinstance(sr.outputs, dict)) else {})
                             if sr.clarify_slot or not sr.success:
                                 break
-                        # Attach a deterministic summary for the parent.
-                        try:
-                            import json as _json
-                            answers = []
-                            for sr in sub_results:
-                                fa = (sr.outputs or {}).get("final_answer") if isinstance(sr.outputs, dict) else None
-                                answers.append(fa if isinstance(fa, str) else None)
-                            tool_outputs = dict(tool_outputs)
-                            tool_outputs["executed_step_answers"] = answers
-                            tool_outputs["final_answer"] = _json.dumps(answers)
-                        except Exception:
-                            pass
+                            i += 1
+                            continue
+
+                        if isinstance(st.get("branch"), dict):
+                            br = st.get("branch") or {}
+                            when = br.get("when") or {}
+                            ref = (when or {}).get("ref")
+                            op = (when or {}).get("op") or "empty"
+                            val = _get_ref_value(ref, prior_step_outputs) if isinstance(ref, str) else None
+                            cond = _is_empty(val) if op == "empty" else (not _is_empty(val)) if op == "non_empty" else False
+
+                            chosen = br.get("then") if cond else br.get("else")
+                            # Insert chosen obligations (list) right after this branch step.
+                            if isinstance(chosen, dict):
+                                chosen = [chosen]
+                            if isinstance(chosen, list):
+                                insert = [c for c in chosen if isinstance(c, dict)]
+                                work = work[: i + 1] + insert + work[i + 1 :]
+                            i += 1
+                            continue
+
+                        # Unknown step shape -> skip
+                        i += 1
+
+                    # Attach a deterministic summary for the parent.
+                    try:
+                        import json as _json
+                        answers = []
+                        for sr in sub_results:
+                            fa = (sr.outputs or {}).get("final_answer") if isinstance(sr.outputs, dict) else None
+                            answers.append(fa if isinstance(fa, str) else None)
+                        tool_outputs = dict(tool_outputs)
+                        tool_outputs["executed_step_answers"] = answers
+                        tool_outputs["final_answer"] = _json.dumps(answers)
+                    except Exception:
+                        pass
+
+                    trajectory_terminal = sub_results[-1] if sub_results else None
+
+                # Bubble up clarify/fail from trajectory execution to the parent obligation result.
+                if trajectory_terminal is not None and (trajectory_terminal.clarify_slot or not trajectory_terminal.success):
+                    self.db.update_obligation_status(obligation_id, "failed")
+                    return ExecutionResult(
+                        obligation_id=obligation_id,
+                        success=False,
+                        tool_name=selected_tool.name,
+                        assertions=assertions,
+                        duration_ms=int((time.time() - start_time) * 1000),
+                        inputs=tool_inputs,
+                        outputs=tool_outputs,
+                        sub_results=sub_results or None,
+                        clarify_slot=trajectory_terminal.clarify_slot,
+                        error=trajectory_terminal.error,
+                    )
             except Exception as e:
                 self.db.update_obligation_status(obligation_id, "failed")
                 return ExecutionResult(
@@ -714,6 +817,7 @@ class Conductor:
                             "satisfies": list(getattr(t, "satisfies", []) or []),
                             "consumes": list(getattr(t, "consumes", []) or []),
                             "produces": list(getattr(t, "produces", []) or []),
+                            "supports": list(getattr(t, "supports", []) or []),
                             "reliability": getattr(t, "reliability", "medium"),
                             "cost": getattr(t, "cost", "medium"),
                             "latency_ms": getattr(t, "latency_ms", 100),
