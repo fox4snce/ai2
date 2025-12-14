@@ -562,6 +562,16 @@ class ToolExecutor:
                         return False
                     return any(isinstance(c, dict) and c.get("kind") == want_kind for c in consumes)
 
+                def _get_consumes_schema(tool: dict, want_kind: str) -> dict | None:
+                    consumes = tool.get("consumes") or []
+                    if not isinstance(consumes, list):
+                        return None
+                    for c in consumes:
+                        if isinstance(c, dict) and c.get("kind") == want_kind:
+                            s = c.get("schema")
+                            return s if isinstance(s, dict) else None
+                    return None
+
                 steps = []
                 for item in seq:
                     want_type = str(item.get("type") or "")
@@ -584,12 +594,61 @@ class ToolExecutor:
                             "missing": {"type": want_type, "kind": want_kind},
                         }
                     candidates.sort(key=_score)
-                    chosen = candidates[0]
 
                     # Build step obligation (tool name is NOT embedded; conductor will route via contracts again).
                     payload_inputs = inputs_map.get(want_kind, {})
                     if not isinstance(payload_inputs, dict):
                         return {"error": "invalid_step_inputs"}
+
+                    # Harden contract matching: validate payload_inputs against consumes schema BEFORE emitting.
+                    # This prevents the "card house collapses" feeling where the plan is emitted but cannot run.
+                    schema_mismatches = []
+                    valid_candidates = []
+                    for t in candidates:
+                        schema = _get_consumes_schema(t, want_kind)
+                        if not schema:
+                            # If no schema, treat as mismatch (contracts should be authoritative).
+                            schema_mismatches.append({"tool": t.get("name"), "reason": "missing_consumes_schema"})
+                            continue
+                        try:
+                            jsonschema.validate(payload_inputs, schema)
+                            valid_candidates.append(t)
+                        except Exception as e:
+                            schema_mismatches.append({"tool": t.get("name"), "reason": "schema_mismatch", "error": str(e)})
+
+                    if not valid_candidates:
+                        # If the problem is simply missing required fields, emit CLARIFY instead of toolsmithing.
+                        # Pick the first required field from the schema of the best candidate, if available.
+                        try:
+                            best = candidates[0]
+                            schema = _get_consumes_schema(best, want_kind) or {}
+                            req = schema.get("required") if isinstance(schema, dict) else None
+                            if isinstance(req, list):
+                                for field in req:
+                                    if isinstance(field, str) and field not in payload_inputs:
+                                        return {
+                                            "kind": "plan",
+                                            "clarify": field,
+                                            "why_not": ["input_missing"],
+                                            "missing_inputs": {"kind": want_kind, "required": req, "provided": list(payload_inputs.keys())},
+                                            "found_tools": [t.get("name") for t in candidates if isinstance(t, dict)],
+                                        }
+                        except Exception:
+                            pass
+                        return {
+                            "error": "input_schema_mismatch",
+                            "missing_capability": {
+                                "type": "missing_capability",
+                                "reason": "tools_exist_but_inputs_do_not_match_schema",
+                                "requested": {"type": want_type, "kind": want_kind, "inputs": payload_inputs},
+                                "candidates": [t.get("name") for t in candidates if isinstance(t, dict)],
+                                "mismatches": schema_mismatches,
+                            },
+                        }
+
+                    # Deterministic tie-break after schema filtering.
+                    valid_candidates.sort(key=_score)
+                    chosen = valid_candidates[0]
                     step_ob = {"type": want_type, "payload": {"kind": want_kind, **payload_inputs}}
                     steps.append({"obligation": step_ob, "derived_from": {"tool": chosen.get("name")}})
 

@@ -61,6 +61,20 @@ python -m pytest tests/test_api.py -q
 - Schema: `mvp/schemas/obligation.schema.json`
 - Validator: `mvp/scripts/validate_obligations.py`
 
+## Manual (in-depth)
+
+For the full explanation of what this program is, how it works (including toolsmith, planning/chaining, and consolidation), and how to use it safely:
+- `docs/manual.md`
+
+## License
+
+This project is licensed under a **Fair Use + Enterprise License**.
+
+- Free for individuals, nonprofits, and companies under $100M revenue
+- Paid license required for large enterprises
+
+See `LICENSE.md` and `NOTICE.md` for details.
+
 ### 4. Request Flow
 1. User: "What's 2+2?"
 2. Translator-In: `REPORT(math: "2+2")` + `VERIFY(target: "last_answer")`

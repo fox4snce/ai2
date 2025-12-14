@@ -82,6 +82,12 @@ def main() -> int:
     missing = trace.get("missing_capabilities") or []
     if not missing:
         print("No missing_capabilities. Done.")
+        # Cheap local-only consolidation check (no LLM, no side effects beyond a state file)
+        try:
+            import scripts.consolidation_check as cc
+            _ = cc.main()
+        except Exception:
+            pass
         return 0
 
     if args.dry_run:
@@ -113,6 +119,11 @@ def main() -> int:
     _print_tool_runs("RERUN", rerun)
 
     # Exit non-zero if toolsmith failed.
+    try:
+        import scripts.consolidation_check as cc
+        _ = cc.main()
+    except Exception:
+        pass
     return rc
 
 

@@ -1,0 +1,32 @@
+name: Normalize
+description: "Stable normalization library tool (email/url/phone). Prefer wrappers for backward compatibility."
+version: "1.0.0"
+consumes:
+  - kind: normalize
+    schema:
+      type: object
+      additionalProperties: false
+      properties:
+        target:
+          type: string
+          enum: ["email", "url", "phone"]
+        value:
+          type: string
+      required: ["target", "value"]
+produces:
+  - assertion:
+      subject: "Value"
+      predicate: "normalizedTo"
+      object: "string"
+satisfies:
+  - "REPORT(normalize)"
+cost: tiny
+reliability: high
+latency_ms: 5
+verify_mode: blocking
+capability_tier: safe
+implementation:
+  type: python
+  entry_point: src.tools.normalize.run
+
+

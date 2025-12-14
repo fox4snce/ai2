@@ -1,25 +1,6 @@
-import re
 from typing import Dict
 
-def _normalize_email(email: str) -> str:
-    """Normalize an email address deterministically.
-
-    Steps:
-    - Strip leading/trailing whitespace
-    - Remove all internal whitespace characters (if any)
-    - Lowercase the entire address
-
-    This is a simple, deterministic normalization suitable for reporting
-    and matching purposes.
-    """
-    if email is None:
-        return ""
-    s = str(email)
-    s = s.strip()
-    # Remove any internal whitespace (spaces, tabs, newlines) which are invalid in emails
-    s = re.sub(r"\s+", "", s)
-    s = s.lower()
-    return s
+from src.tools.normalize import normalize_email
 
 
 def run(inputs: Dict) -> Dict:
@@ -45,7 +26,7 @@ def run(inputs: Dict) -> Dict:
             "error": "invalid_email"
         }
 
-    normalized = _normalize_email(email)
+    normalized = normalize_email(email)
     final = f"Normalized email: {normalized}"
     return {
         "final_answer": final,

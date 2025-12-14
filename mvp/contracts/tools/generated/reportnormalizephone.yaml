@@ -1,0 +1,32 @@
+name: ReportNormalizePhone
+description: "Normalizes phone numbers to E.164-like format for REPORT obligations of kind 'normalize_phone'."
+version: "1.0.0"
+consumes:
+  - kind: "normalize_phone"
+    schema:
+      type: object
+      properties:
+        kind:
+          type: string
+        phone:
+          type: string
+      required:
+        - phone
+produces:
+  - assertion:
+      subject: "PhoneNumber"
+      predicate: "normalizedTo"
+      object: "string"
+satisfies:
+  - "REPORT(normalize_phone)"
+implementation:
+  type: python
+  entry_point: src.tools_generated.normalize_phone.run
+cost: tiny
+reliability: high
+latency_ms: 5
+capability_tier: safe
+verify_mode: blocking
+supports:
+  - "phone_parsed"
+  - "phone_normalized"

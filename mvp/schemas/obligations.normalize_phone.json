@@ -1,0 +1,7 @@
+{
+  "obligations": [
+    { "type": "REPORT", "payload": { "kind": "normalize_phone", "phone": " (555) 123-4567 " } }
+  ]
+}
+
+
