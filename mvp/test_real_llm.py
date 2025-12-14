@@ -27,7 +27,8 @@ def test_real_llm():
         print("  export OPENAI_API_KEY='your-api-key-here'")
         return False
     
-    print(f"Using OpenAI API key: {api_key[:10]}...")
+    # Don't print API key, even partially
+    print("✓ OpenAI API key found in environment")
     
     # Initialize API with real LLM
     try:

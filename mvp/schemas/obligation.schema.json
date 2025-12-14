@@ -20,7 +20,8 @@
               "SCHEDULE",
               "CLARIFY",
               "VERIFY",
-              "DISCOVER_OP"
+              "DISCOVER_OP",
+              "RUN_SKILL"
             ]
           },
           "payload": {
@@ -131,10 +132,22 @@
       "type": "object",
       "properties": {
         "slot": {"type": "string"},
+        "slots": {"type": "array", "items": {"type": "string"}},
         "context": {"type": "string"},
+        "question": {"type": "string"},
         "options": {"type": "array"}
       },
-      "required": ["slot"],
+      "additionalProperties": false
+    },
+    "runSkillPayload": {
+      "type": "object",
+      "properties": {
+        "name": {"type": "string"},
+        "inputs": {"type": "object"},
+        "constraints": {"type": "object"},
+        "capability_budgets": {"type": "object"}
+      },
+      "required": ["name"],
       "additionalProperties": false
     },
     "verifyPayload": {

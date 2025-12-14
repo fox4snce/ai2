@@ -119,3 +119,22 @@ CREATE TABLE trajectory (
     metrics_jsonb JSONB,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Verification Evidence: detailed verification checks and comparisons
+CREATE TABLE verification_evidence (
+    id VARCHAR(50) PRIMARY KEY,
+    tool_run_id VARCHAR(50) REFERENCES tool_run(id),
+    obligation_id VARCHAR(50) REFERENCES obligation(id),
+    check_type VARCHAR(50) NOT NULL,
+    check_method VARCHAR(50) NOT NULL,
+    expected_value TEXT,
+    actual_value TEXT,
+    comparison_result VARCHAR(20) CHECK (comparison_result IN ('match', 'mismatch', 'error', 'skipped')),
+    evidence_jsonb JSONB,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Indexes for verification evidence
+CREATE INDEX idx_verification_evidence_tool_run ON verification_evidence(tool_run_id);
+CREATE INDEX idx_verification_evidence_obligation ON verification_evidence(obligation_id);
+CREATE INDEX idx_verification_evidence_check_type ON verification_evidence(check_type);

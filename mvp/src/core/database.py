@@ -13,6 +13,7 @@ from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass
 import logging
 import threading
+import uuid
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +96,23 @@ class ToolRun:
     duration_ms: Optional[int] = None
     event_id: Optional[str] = None
     created_at: Optional[datetime] = None
+    input_hash: Optional[str] = None  # Hash of canonicalized inputs for caching
+    tool_version: Optional[str] = None  # Tool contract version for cache invalidation
+
+
+@dataclass
+class VerificationEvidence:
+    """Represents evidence from a verification check."""
+    id: str
+    tool_run_id: Optional[str] = None
+    obligation_id: Optional[str] = None
+    check_type: str = ""  # e.g., "recompute", "format_check", "constraint_check"
+    check_method: str = ""  # e.g., "deterministic_recompute", "regex_validation", "denylist_enforcement"
+    expected_value: Optional[str] = None
+    actual_value: Optional[str] = None
+    comparison_result: str = "skipped"  # "match", "mismatch", "error", "skipped"
+    evidence_jsonb: Optional[Dict] = None
+    created_at: Optional[datetime] = None
 
 
 @dataclass
@@ -125,8 +143,29 @@ class Trajectory:
 class IRDatabase:
     """Database interface for the IR system."""
     
-    def __init__(self, db_path: str = ":memory:"):
-        """Initialize the database connection."""
+    def __init__(self, db_path: str = None):
+        """Initialize the database connection.
+        
+        If db_path is None, defaults to .ir/ir.db (persistent).
+        Use ":memory:" explicitly for ephemeral testing.
+        Relative paths are resolved relative to mvp/ directory.
+        """
+        from pathlib import Path
+        
+        if db_path is None:
+            # Default to persistent file-based storage
+            base_dir = Path(__file__).resolve().parents[2]
+            ir_dir = base_dir / ".ir"
+            ir_dir.mkdir(exist_ok=True)
+            db_path = str(ir_dir / "ir.db")
+        elif db_path != ":memory:" and not Path(db_path).is_absolute():
+            # Resolve relative paths relative to mvp/ directory
+            base_dir = Path(__file__).resolve().parents[2]
+            resolved_path = (base_dir / db_path).resolve()
+            # Ensure parent directory exists
+            resolved_path.parent.mkdir(parents=True, exist_ok=True)
+            db_path = str(resolved_path)
+        
         self.db_path = db_path
         # Allow use across threads (FastAPI/TestClient/uvicorn)
         self.conn = sqlite3.connect(db_path, check_same_thread=False)
@@ -141,13 +180,25 @@ class IRDatabase:
         # Serialize DB access across threads
         self._lock = threading.RLock()
         self._create_tables()
+        self._migrate_schema()
     
     def _create_tables(self):
-        """Create the IR database tables."""
+        """Create the IR database tables if they don't exist."""
         with self._lock:
             cursor = self.conn.cursor()
+            # Check if tables already exist
+            cursor.execute("""
+                SELECT name FROM sqlite_master 
+                WHERE type='table' AND name='entity'
+            """)
+            if cursor.fetchone():
+                # Tables already exist, skip creation
+                return
+            
             # Read and execute the schema
-            with open("db/schema.sql", "r") as f:
+            from pathlib import Path
+            schema_path = Path(__file__).resolve().parents[2] / "db" / "schema.sql"
+            with open(schema_path, "r") as f:
                 schema_sql = f.read()
             # Convert PostgreSQL syntax to SQLite
             schema_sql = schema_sql.replace("VARCHAR(50)", "TEXT")
@@ -164,6 +215,28 @@ class IRDatabase:
             schema_sql = schema_sql.replace("CHECK (target_kind IN ('entity', 'relation'))", "")
             cursor.executescript(schema_sql)
             self.conn.commit()
+    
+    def _migrate_schema(self):
+        """Apply schema migrations (add new columns if missing)."""
+        with self._lock:
+            cursor = self.conn.cursor()
+            try:
+                # Check if input_hash column exists
+                cursor.execute("PRAGMA table_info(tool_run)")
+                columns = [row[1] for row in cursor.fetchall()]
+                if "input_hash" not in columns:
+                    cursor.execute("ALTER TABLE tool_run ADD COLUMN input_hash TEXT")
+                if "tool_version" not in columns:
+                    cursor.execute("ALTER TABLE tool_run ADD COLUMN tool_version TEXT")
+                # Add index for cache lookups
+                try:
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_tool_run_cache ON tool_run(tool_name, input_hash, tool_version, status)")
+                except Exception:
+                    pass  # Index may already exist
+                self.conn.commit()
+            except Exception as e:
+                logger.warning(f"Schema migration warning: {e}")
+                self.conn.rollback()
     
     def create_entity(self, entity: Entity) -> str:
         """Create a new entity."""
@@ -282,8 +355,8 @@ class IRDatabase:
             cursor = self.conn.cursor()
             cursor.execute("""
             INSERT INTO tool_run (id, tool_name, inputs_jsonb, outputs_jsonb, 
-                                status, duration_ms, event_id, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                status, duration_ms, event_id, created_at, input_hash, tool_version)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
                 tool_run.id,
                 tool_run.tool_name,
@@ -292,10 +365,33 @@ class IRDatabase:
                 tool_run.status,
                 tool_run.duration_ms,
                 tool_run.event_id,
-                tool_run.created_at or datetime.now().isoformat()
+                tool_run.created_at or datetime.now().isoformat(),
+                tool_run.input_hash,
+                tool_run.tool_version
             ))
             self.conn.commit()
         return tool_run.id
+    
+    def lookup_tool_cache(self, tool_name: str, cache_key: str, tool_version: str) -> Optional[Dict]:
+        """Look up a cached tool run by tool_name + cache_key + tool_version.
+        
+        Note: cache_key is the full hash including input_hash + depends_on_hash.
+        
+        Returns the outputs_jsonb if a completed run exists, None otherwise.
+        """
+        with self._lock:
+            cursor = self.conn.cursor()
+            # Look up by cache_key (stored in input_hash column for now)
+            cursor.execute("""
+            SELECT outputs_jsonb FROM tool_run
+            WHERE tool_name = ? AND input_hash = ? AND tool_version = ? AND status = 'completed'
+            ORDER BY created_at DESC
+            LIMIT 1
+        """, (tool_name, cache_key, tool_version))
+            row = cursor.fetchone()
+            if row and row[0]:
+                return json.loads(row[0])
+        return None
 
     def create_rule(self, rule: Rule) -> str:
         """Create a new rule."""
@@ -422,6 +518,40 @@ class IRDatabase:
             WHERE id = ?
         """, (json.dumps(outputs), status, duration_ms, tool_run_id))
             self.conn.commit()
+    
+    def create_verification_evidence(self, evidence: VerificationEvidence) -> str:
+        """Create a verification evidence record."""
+        with self._lock:
+            cursor = self.conn.cursor()
+            # Check if table exists (for backward compatibility)
+            cursor.execute("""
+                SELECT name FROM sqlite_master 
+                WHERE type='table' AND name='verification_evidence'
+            """)
+            if not cursor.fetchone():
+                # Table doesn't exist yet, skip (will be created on next schema migration)
+                return evidence.id
+            
+            cursor.execute("""
+            INSERT INTO verification_evidence (
+                id, tool_run_id, obligation_id, check_type, check_method,
+                expected_value, actual_value, comparison_result, evidence_jsonb, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+                evidence.id,
+                evidence.tool_run_id,
+                evidence.obligation_id,
+                evidence.check_type,
+                evidence.check_method,
+                evidence.expected_value,
+                evidence.actual_value,
+                evidence.comparison_result,
+                json.dumps(evidence.evidence_jsonb) if evidence.evidence_jsonb else None,
+                evidence.created_at or datetime.now().isoformat()
+            ))
+            self.conn.commit()
+        return evidence.id
     
     def close(self):
         """Close the database connection."""

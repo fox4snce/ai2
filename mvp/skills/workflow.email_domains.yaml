@@ -1,0 +1,37 @@
+name: workflow.email_domains
+version: 1.0.0
+description: Extract emails, normalize batch, count distinct domains with optional denylist and branching
+
+obligations:
+  - type: ACHIEVE
+    payload:
+      state: plan
+      mode: planning
+      goal:
+        predicate: capability.sequence
+        args:
+          sequence:
+            - type: REPORT
+              kind: email.extract
+            - type: REPORT
+              kind: normalize_emails
+            - type: REPORT
+              kind: email.count_distinct_domains
+          inputs:
+            email.extract:
+              text: "{{inputs.text}}"
+            normalize_emails:
+              emails:
+                $ref: STEP_1.emails
+            email.count_distinct_domains:
+              emails:
+                $ref: STEP_2.normalized_emails
+              denylist_domains: "{{inputs.denylist_domains}}"
+          constraints: "{{inputs.constraints}}"
+          on_no_emails: "{{inputs.on_no_emails}}"
+        budgets:
+          max_depth: 1
+          beam: 1
+          time_ms: 50
+
+

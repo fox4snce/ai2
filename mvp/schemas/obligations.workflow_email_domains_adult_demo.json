@@ -1,0 +1,49 @@
+{
+  "obligations": [
+    {
+      "type": "ACHIEVE",
+      "payload": {
+        "state": "plan",
+        "mode": "planning",
+        "goal": {
+          "predicate": "capability.sequence",
+          "args": {
+            "sequence": [
+              { "type": "REPORT", "kind": "email.extract" },
+              {
+                "branch": {
+                  "when": { "ref": "STEP_1.emails", "op": "empty" },
+                  "then": [
+                    { "type": "CLARIFY", "payload": { "slot": "text" } }
+                  ],
+                  "else": [
+                    { "type": "REPORT", "kind": "normalize_emails" },
+                    { "type": "REPORT", "kind": "email.count_distinct_domains" }
+                  ]
+                }
+              }
+            ],
+            "inputs": {
+              "email.extract": {
+                "text": "Here are emails: JEFF@Example.COM and jeff+4@Other.org. Also: test@example.com"
+              },
+              "normalize_emails": {
+                "emails": { "$ref": "STEP_1.emails" }
+              },
+              "email.count_distinct_domains": {
+                "emails": { "$ref": "STEP_2.normalized_emails" },
+                "denylist_domains": ["example.com"]
+              }
+            },
+            "constraints": {
+              "requires": ["rfcish"]
+            }
+          }
+        },
+        "budgets": { "max_depth": 1, "beam": 1, "time_ms": 50 }
+      }
+    }
+  ]
+}
+
+

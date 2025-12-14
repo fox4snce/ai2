@@ -1,15 +1,109 @@
-﻿**/.venv/
-/.venv/
-mvp/.venv/
+# Python
 **/__pycache__/
 **/*.py[cod]
+**/*.pyc
+**/*.pyo
+**/*.pyd
+.Python
+**/.venv/
+/.venv/
+mvp/.venv/
+venv/
+ENV/
+env/
+.venv/
+
+# Testing
 **/.pytest_cache/
 **/.ruff_cache/
 **/.mypy_cache/
-.toolsmith/
-.toolsmith/** 
-.DS_Store
-.idea/
-.vscode/
 .coverage
 coverage.xml
+htmlcov/
+.tox/
+.pytest_cache/
+*.cover
+.hypothesis/
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+*.sublime-project
+*.sublime-workspace
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+*.egg
+*.whl
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+**/.ir/
+.ir/
+mvp/.ir/
+
+# Reports and outputs
+.reports/
+.reports/**
+mvp/.reports/
+.toolsmith/
+.toolsmith/**
+
+# Environment variables and secrets
+.env
+.env.local
+.env.*.local
+*.key
+*.pem
+*.p12
+*.pfx
+secrets.yaml
+secrets.yml
+config.local.yaml
+config.local.yml
+
+# Logs
+*.log
+logs/
+*.log.*
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.backup
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# Jupyter (keep notebooks, just ignore checkpoints)
+.ipynb_checkpoints/
+
+# Project-specific
+mvp/bench.json
+*.pid
+*.seed
+*.pid.lock
+
+# Generated tools (keep structure, ignore generated content)
+mvp/src/tools_generated/*.py
+!mvp/src/tools_generated/__init__.py
+mvp/contracts/tools/generated/*.yaml

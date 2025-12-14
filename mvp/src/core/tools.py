@@ -39,6 +39,7 @@ class ToolContract:
     scopes: List[str] = None
     supports: List[str] = None
     implementation: Dict = None
+    depends_on: List[str] = None
     
     def __post_init__(self):
         if self.scopes is None:
@@ -47,6 +48,8 @@ class ToolContract:
             self.supports = []
         if self.implementation is None:
             self.implementation = {}
+        if self.depends_on is None:
+            self.depends_on = []
 
 
 class ToolRegistry:
@@ -123,7 +126,8 @@ class ToolRegistry:
             auth_required=data.get("auth_required", False),
             scopes=data.get("scopes", []),
             supports=data.get("supports", []),
-            implementation=data.get("implementation", {})
+            implementation=data.get("implementation", {}),
+            depends_on=data.get("depends_on", [])
         )
     
     def get_tool(self, name: str) -> Optional[ToolContract]:
@@ -609,6 +613,11 @@ class ToolExecutor:
                 steps = []
                 missing_steps = []
                 for item in seq:
+                    # Handle branch objects: pass through directly (conductor will evaluate them)
+                    if isinstance(item, dict) and "branch" in item:
+                        steps.append({"branch": item.get("branch")})
+                        continue
+                    
                     want_type = str(item.get("type") or "")
                     want_kind = str(item.get("kind") or "")
                     if want_type not in ("REPORT", "ACHIEVE", "MAINTAIN", "AVOID", "JUSTIFY", "SCHEDULE"):
@@ -696,7 +705,11 @@ class ToolExecutor:
 
                 return {
                     "kind": "plan",
-                    "trajectory": {"steps": steps, "metrics": {"depth_used": 1, "beam_used": 1, "time_ms": 0}},
+                    "trajectory": {
+                        "steps": steps,
+                        "metrics": {"depth_used": 1, "beam_used": 1, "time_ms": 0},
+                        "inputs_map": inputs_map,  # Pass through for branch expansion
+                    },
                     "feasible": True,
                     "capabilities_satisfied": ["ACHIEVE.plan"],
                     "unresolved_steps": missing_steps,

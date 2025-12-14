@@ -311,6 +311,26 @@ def main() -> int:
         _write_text(yaml_path, contract_yaml)
         _write_text(test_path, pytest_code)
 
+        # Create package metadata
+        try:
+            from src.core.packages import PackageManager
+            pm = PackageManager()
+            trace_id = trace.get("trace_id", "unknown")
+            pm.create_package(
+                name=tool_name,
+                owner=os.environ.get("USER", os.environ.get("USERNAME", "system")),
+                created_from_trace=trace_id,
+                tests=[str(test_path.relative_to(MVP_ROOT))],
+                status="experimental",
+                contract_path=str(yaml_path.relative_to(MVP_ROOT)),
+                implementation_path=str(py_path.relative_to(MVP_ROOT)),
+                description=f"Generated tool for {missing.get('required_input_kind', 'unknown capability')}",
+                version="1.0.0"
+            )
+            print(f"- package: created metadata for {tool_name}")
+        except Exception as e:
+            print(f"Warning: Failed to create package metadata: {e}")
+
         # Iterative repair loop: if the generated test fails, feed the failure back to the LLM
         # and ask it to repair ONLY the tool code until tests pass or we hit the limit.
         attempt_dir = _toolsmith_dir() / f"{_slug(tool_name)}"

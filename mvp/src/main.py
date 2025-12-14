@@ -13,9 +13,11 @@ from datetime import datetime
 from .core.database import IRDatabase
 from .core.obligations import ObligationParser
 from .core.tools import ToolRegistry, ToolExecutor
+from .core.skills import SkillRegistry
 from .conductor.conductor import Conductor
 from .translators.translators import TranslatorManager, MockLLM
-from .translators.real_llm import RealTranslatorManager
+from .translators.real_llm import RealTranslatorManager, OpenAILLM
+from .translators.skill_translator import SkillTranslator
 
 logger = logging.getLogger(__name__)
 
@@ -23,15 +25,26 @@ logger = logging.getLogger(__name__)
 class MVPRequestHandler:
     """Main request handler for the MVP system."""
     
-    def __init__(self, db_path: str = ":memory:", use_real_llm: bool = False, api_key: str = None):
-        """Initialize the request handler."""
+    def __init__(self, db_path: str = None, use_real_llm: bool = False, api_key: str = None, use_skill_translator: bool = False):
+        """Initialize the request handler.
+        
+        If db_path is None, defaults to persistent .ir/ir.db.
+        Use ":memory:" explicitly for ephemeral testing.
+        use_skill_translator: If True, use skill-based translator instead of direct obligation translator.
+        """
         # Initialize core components
         self.db = IRDatabase(db_path)
         self.registry = ToolRegistry()
-        self.conductor = Conductor(self.db, self.registry, verify_enabled=False)
+        self.skill_registry = SkillRegistry()
+        self.conductor = Conductor(self.db, self.registry, verify_enabled=False, skill_registry=self.skill_registry)
         
         # Initialize translators
-        if use_real_llm and api_key:
+        self.use_skill_translator = use_skill_translator
+        if use_skill_translator and use_real_llm and api_key:
+            llm = OpenAILLM(api_key)
+            self.translator_manager = SkillTranslator(llm, self.skill_registry)
+            logger.info("Using skill-based translator with real OpenAI LLM")
+        elif use_real_llm and api_key:
             self.translator_manager = RealTranslatorManager(api_key)
             logger.info("Using real OpenAI LLM")
         else:
@@ -102,7 +115,12 @@ class MVPRequestHandler:
             logger.info(f"Processing request: {user_input}")
             
             # Step 1: Translate natural language to obligations
-            obligations_data = self.translator_manager.process_request(user_input)
+            if self.use_skill_translator:
+                # Skill translator returns obligations directly
+                obligations_data = self.translator_manager.translate(user_input)
+            else:
+                # Regular translator
+                obligations_data = self.translator_manager.process_request(user_input)
             
             if "error" in obligations_data:
                 return self._create_error_response(user_input, obligations_data["error"])
@@ -161,8 +179,12 @@ class MVPRequestHandler:
 class MVPAPI:
     """Simple API wrapper for the MVP system."""
     
-    def __init__(self, db_path: str = ":memory:", use_real_llm: bool = False, api_key: str = None):
-        """Initialize API."""
+    def __init__(self, db_path: str = None, use_real_llm: bool = False, api_key: str = None):
+        """Initialize API.
+        
+        If db_path is None, defaults to persistent .ir/ir.db.
+        Use ":memory:" explicitly for ephemeral testing.
+        """
         self.handler = MVPRequestHandler(db_path, use_real_llm, api_key)
     
     def ask(self, question: str) -> str:

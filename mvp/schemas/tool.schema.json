@@ -139,6 +139,14 @@
       },
       "required": ["type"],
       "additionalProperties": false
+    },
+    "depends_on": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^(filesystem|env|db|clock):.*"
+      },
+      "description": "External dependencies that affect cache validity. Format: 'type:identifier'. Examples: 'filesystem:path/to/file', 'env:TZ', 'db:people.sqlite', 'clock'. If absent, tool is assumed pure."
     }
   },
   "required": ["name", "consumes", "produces", "satisfies"],

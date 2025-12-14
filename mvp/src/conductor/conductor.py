@@ -34,6 +34,9 @@ class ExecutionResult:
     inputs: Optional[Dict] = None
     outputs: Optional[Dict] = None
     sub_results: Optional[List["ExecutionResult"]] = None
+    cache_hit: bool = False  # True if this tool run used cached outputs
+    cache_info: Optional[Dict[str, Any]] = None  # Cache key components and dependency snapshot
+    cache_lookup_reason: Optional[str] = None  # hit, miss_not_found, miss_dep_changed, miss_version_changed
 
 
 @dataclass
@@ -44,20 +47,84 @@ class VerificationResult:
     details: str
     duration_ms: int
     error: Optional[str] = None
+    evidence: List[Dict[str, Any]] = None  # List of verification evidence objects
+    
+    def __post_init__(self):
+        if self.evidence is None:
+            self.evidence = []
+
+
+@dataclass
+class CapabilityBudget:
+    """Tracks capability usage limits for token inversion."""
+    max_tool_runs: Optional[int] = None
+    max_cache_misses: Optional[int] = None
+    max_toolsmith_calls: Optional[int] = None
+    max_external_access: Optional[int] = None  # For future web/API calls
+    
+    # Current usage counters
+    tool_runs: int = 0
+    cache_misses: int = 0
+    toolsmith_calls: int = 0
+    external_access: int = 0
+    
+    def check_tool_run(self) -> Tuple[bool, Optional[str]]:
+        """Check if we can execute another tool run."""
+        if self.max_tool_runs is not None and self.tool_runs >= self.max_tool_runs:
+            return False, f"Tool run budget exceeded: {self.tool_runs}/{self.max_tool_runs}"
+        return True, None
+    
+    def check_cache_miss(self) -> Tuple[bool, Optional[str]]:
+        """Check if we can have another cache miss."""
+        if self.max_cache_misses is not None and self.cache_misses >= self.max_cache_misses:
+            return False, f"Cache miss budget exceeded: {self.cache_misses}/{self.max_cache_misses}"
+        return True, None
+    
+    def check_toolsmith_call(self) -> Tuple[bool, Optional[str]]:
+        """Check if we can call toolsmith."""
+        if self.max_toolsmith_calls is not None and self.toolsmith_calls >= self.max_toolsmith_calls:
+            return False, f"Toolsmith call budget exceeded: {self.toolsmith_calls}/{self.max_toolsmith_calls}"
+        return True, None
+    
+    def check_external_access(self) -> Tuple[bool, Optional[str]]:
+        """Check if we can make external access."""
+        if self.max_external_access is not None and self.external_access >= self.max_external_access:
+            return False, f"External access budget exceeded: {self.external_access}/{self.max_external_access}"
+        return True, None
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for trace output."""
+        return {
+            "limits": {
+                "max_tool_runs": self.max_tool_runs,
+                "max_cache_misses": self.max_cache_misses,
+                "max_toolsmith_calls": self.max_toolsmith_calls,
+                "max_external_access": self.max_external_access
+            },
+            "usage": {
+                "tool_runs": self.tool_runs,
+                "cache_misses": self.cache_misses,
+                "toolsmith_calls": self.toolsmith_calls,
+                "external_access": self.external_access
+            }
+        }
 
 
 class Conductor:
     """Main conductor for orchestrating obligation satisfaction."""
     
-    def __init__(self, db: IRDatabase, registry: ToolRegistry, verify_enabled: bool = False):
+    def __init__(self, db: IRDatabase, registry: ToolRegistry, verify_enabled: bool = False, skill_registry = None):
         """Initialize conductor with database and tool registry.
 
         verify_enabled: when False, verification is bypassed (always passes).
+        skill_registry: Optional SkillRegistry for handling RUN_SKILL obligations.
         """
         self.db = db
         self.registry = registry
         self.executor = ToolExecutor(registry)
         self.verify_enabled = verify_enabled
+        self.capability_budget: Optional[CapabilityBudget] = None
+        self.skill_registry = skill_registry
     
     def process_request(self, user_input: str, obligations_data: Dict) -> Dict:
         """
@@ -66,9 +133,10 @@ class Conductor:
         This implements the top-level request loop:
         1. Log user utterance event
         2. Parse obligations
-        3. Execute plan loop for each obligation
-        4. Verify results
-        5. Return final answer
+        3. Initialize capability budgets
+        4. Execute plan loop for each obligation
+        5. Verify results
+        6. Return final answer
         """
         trace_id = str(uuid.uuid4())
         start_time = time.time()
@@ -91,6 +159,15 @@ class Conductor:
         except Exception as e:
             logger.error(f"Failed to parse obligations: {e}")
             return self._create_error_response(trace_id, f"Obligation parsing failed: {e}")
+        
+        # 3. Initialize capability budgets from obligations
+        capability_budgets = obligations_data.get("capability_budgets", {})
+        self.capability_budget = CapabilityBudget(
+            max_tool_runs=capability_budgets.get("max_tool_runs"),
+            max_cache_misses=capability_budgets.get("max_cache_misses"),
+            max_toolsmith_calls=capability_budgets.get("max_toolsmith_calls"),
+            max_external_access=capability_budgets.get("max_external_access")
+        )
         
         # 3. Create obligations in database
         obligation_ids = []
@@ -123,6 +200,15 @@ class Conductor:
 
         emitted_obligation_ids: List[str] = []
         if missing_caps:
+            # Check toolsmith budget
+            if self.capability_budget:
+                for mc in missing_caps:
+                    can_call, budget_error = self.capability_budget.check_toolsmith_call()
+                    if not can_call:
+                        logger.warning(f"Toolsmith budget exceeded: {budget_error}")
+                        break
+                    self.capability_budget.toolsmith_calls += 1
+            
             for i, mc in enumerate(missing_caps, start=1):
                 ob = Obligation(
                     id=f"OB_DISCOVER_{i}_{trace_id}",
@@ -165,6 +251,10 @@ class Conductor:
             "metrics": metrics,
             "capabilities_satisfied": self._collect_capabilities(flat_results)
         }
+        
+        # Add capability budget info if present
+        if self.capability_budget:
+            trace["capability_budget"] = self.capability_budget.to_dict()
         if missing_caps:
             trace["missing_capabilities"] = missing_caps
         if emitted_obligation_ids:
@@ -196,6 +286,93 @@ class Conductor:
         start_time = time.time()
         
         try:
+            # Special-case: RUN_SKILL → compile skill to obligations and execute
+            if parsed_obligation.type == "RUN_SKILL":
+                if not self.skill_registry:
+                    return ExecutionResult(
+                        obligation_id=obligation_id,
+                        success=False,
+                        error="SkillRegistry not available for RUN_SKILL",
+                        inputs=parsed_obligation.raw_payload,
+                        outputs={"status": "error"}
+                    )
+                
+                skill_name = parsed_obligation.raw_payload.get("name")
+                skill_inputs = parsed_obligation.raw_payload.get("inputs", {})
+                skill_version = parsed_obligation.raw_payload.get("version", "1.0.0")
+                constraints = parsed_obligation.raw_payload.get("constraints", {})
+                capability_budgets = parsed_obligation.raw_payload.get("capability_budgets", {})
+                
+                if not skill_name:
+                    return ExecutionResult(
+                        obligation_id=obligation_id,
+                        success=False,
+                        error="RUN_SKILL missing 'name' in payload",
+                        inputs=parsed_obligation.raw_payload,
+                        outputs={"status": "error"}
+                    )
+                
+                try:
+                    # Merge constraints and budgets into inputs
+                    skill_inputs_with_extras = {**skill_inputs}
+                    if constraints:
+                        skill_inputs_with_extras["constraints"] = constraints
+                    
+                    # Compile skill to obligations
+                    compiled = self.skill_registry.compile_to_obligations(
+                        skill_name, skill_inputs_with_extras, skill_version
+                    )
+                    
+                    # Store capability budgets if provided
+                    if capability_budgets:
+                        self.capability_budget = CapabilityBudget(
+                            max_tool_runs=capability_budgets.get("max_tool_runs"),
+                            max_cache_misses=capability_budgets.get("max_cache_misses"),
+                            max_toolsmith_calls=capability_budgets.get("max_toolsmith_calls"),
+                            max_external_access=capability_budgets.get("max_external_access")
+                        )
+                    
+                    # Parse and execute compiled obligations
+                    from ..core.obligations import ObligationParser
+                    parser = ObligationParser()
+                    compiled_obligations = parser.parse_obligations(compiled)
+                    
+                    # Execute each compiled obligation
+                    sub_results = []
+                    for i, comp_ob in enumerate(compiled_obligations):
+                        comp_ob_id = f"{obligation_id}_SKILL_{i}"
+                        comp_result = self._execute_plan_loop(comp_ob_id, comp_ob)
+                        sub_results.append(comp_result)
+                    
+                    # Aggregate results
+                    all_assertions = []
+                    for sr in sub_results:
+                        if sr and sr.assertions:
+                            all_assertions.extend(sr.assertions)
+                    
+                    success = all(sr.success for sr in sub_results if sr)
+                    
+                    return ExecutionResult(
+                        obligation_id=obligation_id,
+                        success=success,
+                        tool_name=f"Skill:{skill_name}",
+                        assertions=all_assertions,
+                        duration_ms=int((time.time() - start_time) * 1000),
+                        inputs=skill_inputs,
+                        outputs={"compiled_obligations": len(compiled_obligations), "sub_results": len(sub_results)},
+                        sub_results=sub_results
+                    )
+                    
+                except Exception as e:
+                    logger.error(f"Failed to execute RUN_SKILL {skill_name}: {e}")
+                    return ExecutionResult(
+                        obligation_id=obligation_id,
+                        success=False,
+                        error=f"Skill execution failed: {e}",
+                        inputs=parsed_obligation.raw_payload,
+                        outputs={"status": "error"}
+                    )
+            
             # Special-case: ACHIEVE(status.name) with value → save directly
             if parsed_obligation.type == "ACHIEVE":
                 state = parsed_obligation.raw_payload.get("state")
@@ -277,14 +454,33 @@ class Conductor:
                 )
             
             # 2. Select best tool (or honor an explicit plan-chosen tool, if provided and valid)
+            # Security rule: Only honor derived_from.tool if:
+            # - Tool satisfies the step capability per contracts
+            # - Payload validates against its schema
+            # - Tool meets constraints (if any)
             selected_tool: Optional[ToolContract] = None
             if forced_tool_name:
                 ft = self.registry.get_tool(str(forced_tool_name))
-                if ft and any(t.name == ft.name for t in candidate_tools):
-                    # Ensure the forced tool actually accepts the payload shape.
-                    ok, _why = self.registry.validate_tool_inputs(ft, parsed_obligation.raw_payload)
-                    if ok:
-                        selected_tool = ft
+                if ft:
+                    # Check 1: Tool must be in candidate list (satisfies capability)
+                    if not any(t.name == ft.name for t in candidate_tools):
+                        logger.warning(f"Forced tool {forced_tool_name} does not satisfy capability, ignoring")
+                    # Check 2: Payload must validate against tool schema
+                    elif not self.registry.validate_tool_inputs(ft, parsed_obligation.raw_payload)[0]:
+                        logger.warning(f"Forced tool {forced_tool_name} does not accept payload shape, ignoring")
+                    # Check 3: Tool must meet constraints (if constraints are specified)
+                    else:
+                        # Extract constraints from payload (if any)
+                        constraints = parsed_obligation.raw_payload.get("constraints") or {}
+                        required_supports = constraints.get("requires") or []
+                        if required_supports:
+                            tool_supports = set(getattr(ft, "supports", []) or [])
+                            if not all(s in tool_supports for s in required_supports):
+                                logger.warning(f"Forced tool {forced_tool_name} does not meet constraints {required_supports}, ignoring")
+                            else:
+                                selected_tool = ft
+                        else:
+                            selected_tool = ft
             if selected_tool is None:
                 selected_tool = self.registry.select_best_tool(
                     parsed_obligation.type,
@@ -323,9 +519,74 @@ class Conductor:
             except Exception:
                 logger.debug("No support tools executed")
 
-            # 3b. Execute tool
+            # 3a. Check capability budgets before execution
+            if self.capability_budget:
+                can_run, budget_error = self.capability_budget.check_tool_run()
+                if not can_run:
+                    logger.warning(f"Tool run budget exceeded: {budget_error}")
+                    return ExecutionResult(
+                        obligation_id=obligation_id,
+                        success=False,
+                        tool_name=selected_tool.name,
+                        error=f"Capability budget exceeded: {budget_error}",
+                        inputs={},
+                        outputs={"status": "budget_exceeded", "budget_error": budget_error}
+                    )
+            
+            # 3b. Check cache before executing tool
             tool_inputs = self._prepare_tool_inputs(selected_tool, parsed_obligation)
-            tool_outputs = self.executor.execute_tool(selected_tool.name, tool_inputs)
+            from ..core.cache import compute_input_hash
+            tool_version = getattr(selected_tool, "version", "1.0.0")
+            depends_on = getattr(selected_tool, "depends_on", None) or []
+            cache_info = compute_input_hash(selected_tool.name, tool_inputs, tool_version, depends_on)
+            input_hash = cache_info["input_hash"]
+            depends_on_hash = cache_info["depends_on_hash"]
+            cache_key = cache_info["cache_key"]
+            dependency_snapshot = cache_info["dependency_snapshot"]
+            
+            cached_outputs = self.db.lookup_tool_cache(selected_tool.name, cache_key, tool_version)
+            
+            cache_hit = False
+            cache_lookup_reason = "miss_not_found"
+            cache_start_time = time.time()
+            if cached_outputs is not None:
+                logger.info(f"Cache hit for {selected_tool.name} (hash={cache_key[:8]}...)")
+                tool_outputs = cached_outputs
+                cache_hit = True
+                cache_lookup_reason = "hit"
+                # For cache hits, duration is just the lookup time (near-zero)
+                cache_duration_ms = int((time.time() - cache_start_time) * 1000)
+            else:
+                # Determine why cache missed
+                # Check if there's a cached entry with different hash (version or dependency changed)
+                if depends_on_hash:
+                    # Could be dependency change, but we can't easily check without storing previous hashes
+                    # For now, mark as miss_not_found (most common case)
+                    cache_lookup_reason = "miss_not_found"
+                else:
+                    cache_lookup_reason = "miss_not_found"
+                
+                # Check cache miss budget
+                if self.capability_budget:
+                    can_miss, budget_error = self.capability_budget.check_cache_miss()
+                    if not can_miss:
+                        logger.warning(f"Cache miss budget exceeded: {budget_error}")
+                        return ExecutionResult(
+                            obligation_id=obligation_id,
+                            success=False,
+                            tool_name=selected_tool.name,
+                            error=f"Capability budget exceeded: {budget_error}",
+                            inputs=tool_inputs,
+                            outputs={"status": "budget_exceeded", "budget_error": budget_error}
+                        )
+                    self.capability_budget.cache_misses += 1
+                
+                # 3c. Execute tool (cache miss)
+                tool_outputs = self.executor.execute_tool(selected_tool.name, tool_inputs)
+                
+                # Track tool run
+                if self.capability_budget:
+                    self.capability_budget.tool_runs += 1
             
             # 4. Check for tool execution errors
             if "error" in tool_outputs:
@@ -424,6 +685,10 @@ class Conductor:
                 )
                 trajectory_terminal: Optional[ExecutionResult] = None
                 if has_executable_steps:
+                    # Get inputs_map from trajectory metadata (for expanding branch obligations)
+                    trajectory_meta = traj if isinstance(traj, dict) else {}
+                    inputs_map = trajectory_meta.get("inputs_map", {}) if isinstance(trajectory_meta, dict) else {}
+                    
                     # Template mechanism: allow later steps to reference earlier step outputs.
                     # Format: {{STEP_1.result}} where "1" is the 1-based executed-obligation index within this trajectory,
                     # and "result" is a key in that step's tool outputs.
@@ -546,12 +811,32 @@ class Conductor:
                             cond = _is_empty(val) if op == "empty" else (not _is_empty(val)) if op == "non_empty" else False
 
                             chosen = br.get("then") if cond else br.get("else")
-                            # Insert chosen obligations (list) right after this branch step.
+                            # Expand chosen obligations: convert raw {type, kind} to {obligation: {type, payload}}
+                            # using inputs_map from trajectory metadata.
                             if isinstance(chosen, dict):
                                 chosen = [chosen]
                             if isinstance(chosen, list):
-                                insert = [c for c in chosen if isinstance(c, dict)]
-                                work = work[: i + 1] + insert + work[i + 1 :]
+                                expanded = []
+                                for c in chosen:
+                                    if not isinstance(c, dict):
+                                        continue
+                                    # If already in obligation format, use as-is
+                                    if "obligation" in c:
+                                        expanded.append(c)
+                                        continue
+                                    # Otherwise, expand from {type, kind} or {type, payload}
+                                    want_type = c.get("type")
+                                    want_kind = c.get("kind")
+                                    if want_type and want_kind:
+                                        # Look up inputs from inputs_map
+                                        payload_inputs = inputs_map.get(want_kind, {})
+                                        if isinstance(payload_inputs, dict):
+                                            step_payload = {"kind": want_kind, **payload_inputs}
+                                            expanded.append({"obligation": {"type": want_type, "payload": step_payload}})
+                                    elif "payload" in c:
+                                        # Already has payload, just wrap in obligation format
+                                        expanded.append({"obligation": {"type": want_type or "REPORT", "payload": c.get("payload", {})}})
+                                work = work[: i + 1] + expanded + work[i + 1 :]
                             i += 1
                             continue
 
@@ -627,9 +912,41 @@ class Conductor:
             else:
                 self.db.update_obligation_status(obligation_id, "resolved")
             
-            duration_ms = int((time.time() - start_time) * 1000)
+            # Calculate duration: use cache duration for cache hits, full execution time for misses
+            if cache_hit:
+                duration_ms = cache_duration_ms
+            else:
+                duration_ms = int((time.time() - start_time) * 1000)
             
-            logger.info(f"Obligation {obligation_id} resolved by {selected_tool.name} in {duration_ms}ms")
+            # Store tool run in database with provenance (hash, version) for caching and persistence
+            if not cache_hit and "error" not in tool_outputs:
+                try:
+                    import uuid
+                    tool_run_id = f"TR_{obligation_id}_{uuid.uuid4().hex[:8]}"
+                    tool_run = ToolRun(
+                        id=tool_run_id,
+                        tool_name=selected_tool.name,
+                        inputs_jsonb=tool_inputs,
+                        outputs_jsonb=tool_outputs,
+                        status="completed",
+                        duration_ms=duration_ms,
+                        event_id=None,
+                        input_hash=cache_key,  # Store full cache_key for lookup
+                        tool_version=tool_version
+                    )
+                    self.db.create_tool_run(tool_run)
+                except Exception as e:
+                    logger.warning(f"Failed to persist tool run: {e}")
+            
+            logger.info(f"Obligation {obligation_id} resolved by {selected_tool.name} in {duration_ms}ms {'(CACHE HIT)' if cache_hit else ''}")
+            
+            # Store cache info for reporting
+            cache_info_dict = {
+                "input_hash": input_hash,
+                "depends_on_hash": depends_on_hash,
+                "cache_key": cache_key,
+                "dependency_snapshot": dependency_snapshot
+            }
             
             return ExecutionResult(
                 obligation_id=obligation_id,
@@ -639,7 +956,10 @@ class Conductor:
                 duration_ms=duration_ms,
                 inputs=tool_inputs,
                 outputs=tool_outputs,
-                sub_results=sub_results or None
+                sub_results=sub_results or None,
+                cache_hit=cache_hit,
+                cache_info=cache_info_dict,
+                cache_lookup_reason=cache_lookup_reason
             )
             
         except Exception as e:
@@ -710,10 +1030,12 @@ class Conductor:
         """
         Execute verification loop on execution results.
         
-        This implements:
-        1. Re-evaluate deterministic results
-        2. Check consistency
-        3. Validate provenance
+        Real VERIFY mode (cheap, deterministic):
+        - Normalizers/parsers: re-run with canonicalization and compare
+        - Extractors: sanity checks (output strings contain "@", domains have dot)
+        - Constraint flows: ensure constraints were actually enforced
+        
+        Returns VerificationResult with evidence objects for auditability.
         """
         start_time = time.time()
         if not getattr(self, 'verify_enabled', False):
@@ -722,16 +1044,17 @@ class Conductor:
                 passed=True,
                 method="disabled",
                 details="Verification disabled",
-                duration_ms=0
+                duration_ms=0,
+                evidence=[]
             )
         
         try:
             any_blocking_fail = False
+            verify_details = []
+            evidence_list = []
+            
             for result in execution_results:
-                if not result.success:
-                    continue
-                
-                if not result.tool_name:
+                if not result.success or not result.tool_name:
                     continue
                 
                 tool = self.registry.get_tool(result.tool_name)
@@ -739,46 +1062,200 @@ class Conductor:
                     continue
                 
                 verify_mode = getattr(tool, "verify_mode", "blocking")
-                
-                # Non-blocking or off: log implicitly, do not flip overall pass
-                if verify_mode in ("off", "non_blocking"):
-                    # Optionally, we could attempt a quick recompute and add to details/logs
-                    # but NEVER block final answer for non_blocking tiers.
+                if verify_mode == "off":
                     continue
                 
-                # Blocking verification: attempt recompute and strict compare
-                verification_outputs = self.executor.execute_tool(
-                    result.tool_name,
-                    self._get_tool_inputs_from_result(result)
-                )
-                if verification_outputs != self._get_tool_outputs_from_result(result):
-                    any_blocking_fail = True
-                    break
+                tool_name = result.tool_name
+                outputs = result.outputs or {}
+                tool_run_id = getattr(result, 'tool_run_id', None)
+                obligation_id = getattr(result, 'obligation_id', None)
+                
+                # Normalizers/parsers: re-run with canonicalization
+                if "normalize" in tool_name.lower() or "Normalize" in tool_name:
+                    try:
+                        re_outputs = self.executor.execute_tool(tool_name, result.inputs or {})
+                        # Compare normalized values (semantic, not exact string)
+                        orig_val = outputs.get("normalized_value") or outputs.get("normalized_email") or outputs.get("normalized_url")
+                        re_val = re_outputs.get("normalized_value") or re_outputs.get("normalized_email") or re_outputs.get("normalized_url")
+                        
+                        # Create evidence object
+                        evidence_id = f"VE_{uuid.uuid4().hex[:12]}"
+                        evidence_obj = {
+                            "id": evidence_id,
+                            "tool_run_id": tool_run_id,
+                            "obligation_id": obligation_id,
+                            "check_type": "recompute",
+                            "check_method": "deterministic_recompute",
+                            "expected_value": str(orig_val) if orig_val else None,
+                            "actual_value": str(re_val) if re_val else None,
+                            "comparison_result": "match" if (orig_val and re_val and orig_val.lower().strip() == re_val.lower().strip()) else "mismatch",
+                            "evidence_jsonb": {
+                                "tool_name": tool_name,
+                                "inputs": result.inputs,
+                                "original_output": orig_val,
+                                "recomputed_output": re_val
+                            }
+                        }
+                        evidence_list.append(evidence_obj)
+                        
+                        # Store in database
+                        from ..core.database import VerificationEvidence
+                        try:
+                            ve = VerificationEvidence(
+                                id=evidence_id,
+                                tool_run_id=tool_run_id,
+                                obligation_id=obligation_id,
+                                check_type="recompute",
+                                check_method="deterministic_recompute",
+                                expected_value=str(orig_val) if orig_val else None,
+                                actual_value=str(re_val) if re_val else None,
+                                comparison_result=evidence_obj["comparison_result"],
+                                evidence_jsonb=evidence_obj["evidence_jsonb"]
+                            )
+                            self.db.create_verification_evidence(ve)
+                        except Exception as db_e:
+                            logger.warning(f"Failed to store verification evidence: {db_e}")
+                        
+                        if orig_val and re_val and orig_val.lower().strip() != re_val.lower().strip():
+                            any_blocking_fail = True
+                            verify_details.append(f"{tool_name}: normalized value mismatch")
+                    except Exception as e:
+                        evidence_obj = {
+                            "id": f"VE_{uuid.uuid4().hex[:12]}",
+                            "tool_run_id": tool_run_id,
+                            "obligation_id": obligation_id,
+                            "check_type": "recompute",
+                            "check_method": "deterministic_recompute",
+                            "comparison_result": "error",
+                            "evidence_jsonb": {"error": str(e)}
+                        }
+                        evidence_list.append(evidence_obj)
+                        verify_details.append(f"{tool_name}: verify recompute failed: {e}")
+                
+                # Extractors: sanity checks
+                elif "extract" in tool_name.lower() or "Extract" in tool_name:
+                    emails = outputs.get("emails") or []
+                    if isinstance(emails, list):
+                        for idx, email in enumerate(emails):
+                            evidence_id = f"VE_{uuid.uuid4().hex[:12]}"
+                            is_valid = isinstance(email, str) and "@" in email and "." in email.split("@")[-1]
+                            evidence_obj = {
+                                "id": evidence_id,
+                                "tool_run_id": tool_run_id,
+                                "obligation_id": obligation_id,
+                                "check_type": "format_check",
+                                "check_method": "regex_validation",
+                                "expected_value": "valid_email_format",
+                                "actual_value": str(email),
+                                "comparison_result": "match" if is_valid else "mismatch",
+                                "evidence_jsonb": {
+                                    "tool_name": tool_name,
+                                    "email_index": idx,
+                                    "email": email,
+                                    "validation_rules": ["contains_@", "domain_has_dot"]
+                                }
+                            }
+                            evidence_list.append(evidence_obj)
+                            
+                            # Store in database
+                            from ..core.database import VerificationEvidence
+                            try:
+                                ve = VerificationEvidence(
+                                    id=evidence_id,
+                                    tool_run_id=tool_run_id,
+                                    obligation_id=obligation_id,
+                                    check_type="format_check",
+                                    check_method="regex_validation",
+                                    expected_value="valid_email_format",
+                                    actual_value=str(email),
+                                    comparison_result=evidence_obj["comparison_result"],
+                                    evidence_jsonb=evidence_obj["evidence_jsonb"]
+                                )
+                                self.db.create_verification_evidence(ve)
+                            except Exception as db_e:
+                                logger.warning(f"Failed to store verification evidence: {db_e}")
+                            
+                            if not is_valid:
+                                any_blocking_fail = True
+                                verify_details.append(f"{tool_name}: invalid email format: {email}")
+                
+                # Constraint flows: verify constraints enforced
+                if "denylist" in str(result.inputs or {}).lower():
+                    denylist = (result.inputs or {}).get("denylist_domains") or []
+                    domains = outputs.get("distinct_domains") or []
+                    evidence_id = f"VE_{uuid.uuid4().hex[:12]}"
+                    violated = [d for d in denylist if d in domains]
+                    evidence_obj = {
+                        "id": evidence_id,
+                        "tool_run_id": tool_run_id,
+                        "obligation_id": obligation_id,
+                        "check_type": "constraint_check",
+                        "check_method": "denylist_enforcement",
+                        "expected_value": f"domains_not_in_denylist: {denylist}",
+                        "actual_value": f"domains_found: {domains}",
+                        "comparison_result": "match" if not violated else "mismatch",
+                        "evidence_jsonb": {
+                            "tool_name": tool_name,
+                            "denylist": denylist,
+                            "domains_found": domains,
+                            "violations": violated
+                        }
+                    }
+                    evidence_list.append(evidence_obj)
+                    
+                    # Store in database
+                    from ..core.database import VerificationEvidence
+                    try:
+                        ve = VerificationEvidence(
+                            id=evidence_id,
+                            tool_run_id=tool_run_id,
+                            obligation_id=obligation_id,
+                            check_type="constraint_check",
+                            check_method="denylist_enforcement",
+                            expected_value=evidence_obj["expected_value"],
+                            actual_value=evidence_obj["actual_value"],
+                            comparison_result=evidence_obj["comparison_result"],
+                            evidence_jsonb=evidence_obj["evidence_jsonb"]
+                        )
+                        self.db.create_verification_evidence(ve)
+                    except Exception as db_e:
+                        logger.warning(f"Failed to store verification evidence: {db_e}")
+                    
+                    if violated:
+                        any_blocking_fail = True
+                        verify_details.append(f"{tool_name}: denylist not enforced")
+                
+                # Non-blocking: log but don't fail
+                if verify_mode == "non_blocking" and any_blocking_fail:
+                    verify_details.append(f"{tool_name}: non-blocking verify issues (logged)")
+                    any_blocking_fail = False  # Don't fail for non-blocking
             
             duration_ms = int((time.time() - start_time) * 1000)
             if any_blocking_fail:
                 return VerificationResult(
                     passed=False,
-                    method="recompute",
-                    details="Blocking verify failed",
+                    method="deterministic_checks",
+                    details="; ".join(verify_details),
                     duration_ms=duration_ms,
-                    error="Result mismatch"
+                    error="Verification failed",
+                    evidence=evidence_list
                 )
             else:
                 return VerificationResult(
                     passed=True,
-                    method="recompute",
-                    details="Verify passed or non-blocking",
-                    duration_ms=duration_ms
+                    method="deterministic_checks",
+                    details="; ".join(verify_details) if verify_details else "All checks passed",
+                    duration_ms=duration_ms,
+                    evidence=evidence_list
                 )
         except Exception as e:
-            duration_ms = int((time.time() - start_time) * 1000)
             return VerificationResult(
                 passed=False,
-                method="recompute",
-                details=f"Verification failed: {e}",
-                duration_ms=duration_ms,
-                error=str(e)
+                method="error",
+                details=f"Verification error: {e}",
+                duration_ms=int((time.time() - start_time) * 1000),
+                error=str(e),
+                evidence=[]
             )
     
     def _prepare_tool_inputs(self, tool: ToolContract, parsed_obligation: ParsedObligation) -> Dict:
@@ -1097,7 +1574,7 @@ class Conductor:
     
     def _serialize_execution_result(self, result: ExecutionResult) -> Dict:
         """Serialize execution result for trace."""
-        return {
+        serialized = {
             "id": result.obligation_id,
             "tool_name": result.tool_name,
             "success": result.success,
@@ -1107,6 +1584,14 @@ class Conductor:
             "inputs": result.inputs,
             "outputs": result.outputs
         }
+        # Add cache info if present
+        if hasattr(result, 'cache_hit'):
+            serialized["cache_hit"] = result.cache_hit
+        if hasattr(result, 'cache_info') and result.cache_info:
+            serialized["cache_info"] = result.cache_info
+        if hasattr(result, 'cache_lookup_reason'):
+            serialized["cache_lookup_reason"] = result.cache_lookup_reason
+        return serialized
     
     def _serialize_assertion(self, assertion: Assertion) -> Dict:
         """Serialize assertion for trace."""
@@ -1128,7 +1613,8 @@ class Conductor:
             "method": result.method,
             "details": result.details,
             "duration_ms": result.duration_ms,
-            "error": result.error
+            "error": result.error,
+            "evidence": result.evidence or []
         }
     
     def _get_tool_inputs_from_result(self, result: ExecutionResult) -> Dict:
