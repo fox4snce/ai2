@@ -71,6 +71,8 @@ AI2 provides three properties that are hard to get cleanly elsewhere:
 
 ### 7. **Tool Generation (Toolsmith)**
 - Automatically generate tools when capabilities are missing
+- **Requires LLM**: Uses OpenAI via `llm_utils.py` (requires `OPENAI_API_KEY` environment variable)
+- Generates tool contracts, Python implementations, and tests from `DISCOVER_OP` obligations
 - Tools have metadata: owner, version, tests, status (experimental/stable/deprecated)
 - Package management for generated tools
 
@@ -92,6 +94,10 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 # Note: requirements.txt lives at the repo root, not inside mvp/
 python -m pip install -r ..\requirements.txt
+
+# Optional: For LLM features (translation, tool generation)
+# Set OPENAI_API_KEY environment variable (currently only OpenAI supported)
+$env:OPENAI_API_KEY = "your-api-key-here"
 ```
 
 ### 2) Run the API Server
@@ -100,7 +106,22 @@ python -m src.api
 # Server on http://0.0.0.0:8000
 ```
 
-### 3) Use the API
+### 3) LLM Requirements (Optional)
+
+**For Natural Language Translation and Tool Generation:**
+
+- **Currently only OpenAI supported** via `llm_utils.py` (at repo root)
+- Set `OPENAI_API_KEY` environment variable
+- Required for:
+  - Natural language → obligations translation (skill-based or legacy)
+  - Tool generation via `scripts/toolsmith.py` (generates tools from `DISCOVER_OP` obligations)
+
+**For Direct Obligations (No LLM needed):**
+
+- You can use the system without any LLM by sending obligations directly
+- All tool execution, caching, and verification work without LLM
+
+### 4) Use the API
 
 #### Direct Obligations (Deterministic, No LLM)
 ```bash
@@ -146,7 +167,7 @@ obligations = {
 result = api.execute_obligations(obligations)
 ```
 
-### 4) Run Tests
+### 5) Run Tests
 ```powershell
 # Smoke test (no server)
 python scripts/smoke_api.py
@@ -176,6 +197,8 @@ Add new capabilities by:
 - **Adding Tools**: Create tool contracts in `mvp/contracts/tools/` with YAML definitions
 - **Adding Skills**: Create workflow templates in `mvp/skills/` that compile to obligations
 - **Tool Generation**: Use `scripts/toolsmith.py` to auto-generate tools from traces
+  - **Requires LLM**: Currently only OpenAI supported via `llm_utils.py` (set `OPENAI_API_KEY` environment variable)
+  - Reads traces with `DISCOVER_OP` obligations and generates tool contracts, implementations, and tests
 
 The system is designed to scale: add tools and skills without changing the core conductor, IR, or verification logic.
 
@@ -573,6 +596,9 @@ The core system is stable. To extend:
 1. **Add Skills**: Create workflow templates in `mvp/skills/`
 2. **Add Tools**: Create tool contracts in `mvp/contracts/tools/`
 3. **Generate Tools**: Use `scripts/toolsmith.py` for auto-generation
+   - Requires `OPENAI_API_KEY` environment variable
+   - Currently only OpenAI supported (via `llm_utils.py` at repo root)
+   - Generates tools from `DISCOVER_OP` obligations in traces
 4. **Enhance Verification**: Add more sophisticated checking methods
 5. **Build Integrations**: Connect to external systems via tools
 
