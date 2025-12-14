@@ -1,0 +1,35 @@
+{
+  "obligations": [
+    {
+      "type": "ACHIEVE",
+      "payload": {
+        "state": "plan",
+        "mode": "planning",
+        "goal": {
+          "predicate": "capability.sequence",
+          "args": {
+            "sequence": [
+              { "type": "REPORT", "kind": "email.extract" },
+              { "type": "REPORT", "kind": "normalize_emails" },
+              { "type": "REPORT", "kind": "email.count_distinct_domains" }
+            ],
+            "inputs": {
+              "email.extract": {
+                "text": "Here are two emails: JEFF@Example.COM and  jeff+4@Other.org. Also ignore: not-an-email@"
+              },
+              "normalize_emails": {
+                "emails": { "$ref": "STEP_1.emails" }
+              },
+              "email.count_distinct_domains": {
+                "emails": { "$ref": "STEP_2.normalized_emails" }
+              }
+            }
+          }
+        },
+        "budgets": { "max_depth": 1, "beam": 3, "time_ms": 50 }
+      }
+    }
+  ]
+}
+
+

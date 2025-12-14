@@ -572,6 +572,15 @@ class ToolExecutor:
                             return s if isinstance(s, dict) else None
                     return None
 
+                def _contains_ref(obj: Any) -> bool:
+                    if isinstance(obj, dict):
+                        if set(obj.keys()) == {"$ref"} and isinstance(obj.get("$ref"), str):
+                            return True
+                        return any(_contains_ref(v) for v in obj.values())
+                    if isinstance(obj, list):
+                        return any(_contains_ref(v) for v in obj)
+                    return False
+
                 steps = []
                 missing_steps = []
                 for item in seq:
@@ -614,8 +623,13 @@ class ToolExecutor:
                             continue
                         try:
                             # Validate the full payload shape as it will be executed (including kind).
-                            jsonschema.validate(step_payload, schema)
-                            valid_candidates.append(t)
+                            # If the payload uses $ref placeholders, defer validation until execution-time
+                            # (the conductor will resolve $ref before routing to tools).
+                            if _contains_ref(step_payload):
+                                valid_candidates.append(t)
+                            else:
+                                jsonschema.validate(step_payload, schema)
+                                valid_candidates.append(t)
                         except Exception as e:
                             schema_mismatches.append({"tool": t.get("name"), "reason": "schema_mismatch", "error": str(e)})
 

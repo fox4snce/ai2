@@ -1,0 +1,32 @@
+name: EmailOps.Extract
+description: Extracts email addresses from a text blob deterministically
+version: 1.0.0
+consumes:
+  - kind: email.extract
+    schema:
+      type: object
+      additionalProperties: false
+      properties:
+        kind:
+          type: string
+          enum: ["email.extract"]
+        text:
+          type: string
+      required: ["kind", "text"]
+produces:
+  - assertion:
+      subject: Text
+      predicate: containsEmails
+      object: array
+satisfies:
+  - REPORT(email.extract)
+cost: tiny
+reliability: high
+latency_ms: 5
+verify_mode: non_blocking
+capability_tier: safe
+implementation:
+  type: python
+  entry_point: src.tools.email_ops.extract_emails
+
+

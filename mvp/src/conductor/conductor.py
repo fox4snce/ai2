@@ -409,7 +409,23 @@ class Conductor:
                         # and "result" is a key in that step's tool outputs.
                         token_re = re.compile(r"\{\{\s*STEP_(\d+)\.([A-Za-z0-9_]+)\s*\}\}")
 
+                        # Shape reference mechanism: allow structured values (lists/dicts) to come from prior outputs.
+                        # Format: {"$ref": "STEP_1.emails"} where "emails" is a key in that step's outputs.
+                        ref_re = re.compile(r"^STEP_(\d+)\.([A-Za-z0-9_]+)$")
+
                         def _resolve_templates(obj: Any, prior_outputs: List[Dict[str, Any]]) -> Any:
+                            # Structured ref: replace the whole object, not a string substitution.
+                            if isinstance(obj, dict) and set(obj.keys()) == {"$ref"} and isinstance(obj.get("$ref"), str):
+                                m = ref_re.match(obj["$ref"].strip())
+                                if not m:
+                                    return obj
+                                idx = int(m.group(1))
+                                key = m.group(2)
+                                if idx < 1 or idx > len(prior_outputs):
+                                    return obj
+                                val = (prior_outputs[idx - 1] or {}).get(key)
+                                # Deep-copy to avoid accidental mutation across steps.
+                                return copy.deepcopy(val)
                             if isinstance(obj, dict):
                                 return {k: _resolve_templates(v, prior_outputs) for k, v in obj.items()}
                             if isinstance(obj, list):

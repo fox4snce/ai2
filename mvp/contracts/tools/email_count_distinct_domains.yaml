@@ -1,0 +1,34 @@
+name: EmailOps.CountDistinctDomains
+description: Count distinct email domains from a list of emails deterministically
+version: 1.0.0
+consumes:
+  - kind: email.count_distinct_domains
+    schema:
+      type: object
+      additionalProperties: false
+      properties:
+        kind:
+          type: string
+          enum: ["email.count_distinct_domains"]
+        emails:
+          type: array
+          items:
+            type: string
+      required: ["kind", "emails"]
+produces:
+  - assertion:
+      subject: Emails
+      predicate: hasDistinctDomains
+      object: number
+satisfies:
+  - REPORT(email.count_distinct_domains)
+cost: tiny
+reliability: high
+latency_ms: 5
+verify_mode: non_blocking
+capability_tier: safe
+implementation:
+  type: python
+  entry_point: src.tools.email_ops.count_distinct_domains
+
+
