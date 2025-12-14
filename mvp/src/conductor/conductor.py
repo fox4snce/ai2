@@ -107,7 +107,7 @@ class Conductor:
         for obligation_id, parsed_obligation in zip(obligation_ids, parsed_obligations):
             result = self._execute_plan_loop(obligation_id, parsed_obligation)
             execution_results.append(result)
-
+        
         flat_results = self._flatten_execution_results(execution_results)
 
         # 4b. Collect missing-capability payloads and emit DISCOVER_OP obligations for toolsmithing
@@ -132,7 +132,7 @@ class Conductor:
                 emitted_obligation_ids.append(self.db.create_obligation(ob))
         
         # 5. Verify results (selective or disabled)
-        verification_result = self._execute_verify_loop(execution_results)
+        verification_result = self._execute_verify_loop(flat_results)
         
         # 6. Generate final answer
         final_answer = self._generate_final_answer(execution_results, verification_result)
@@ -333,11 +333,14 @@ class Conductor:
             for assertion in assertions:
                 self.db.create_assertion(assertion)
 
-            # Ensure tools provide a deterministic final_answer for downstream composition (trajectory step summaries).
+            # Ensure tools provide a deterministic final_answer for downstream chaining.
             try:
                 tool_outputs = self._ensure_final_answer(selected_tool.name, tool_outputs, assertions)
             except Exception:
                 pass
+
+            # Collected sub-results from trajectory-emitted obligation steps (if any).
+            sub_results: List[ExecutionResult] = []
             
             # 7. Update obligation status
             # Guardrails check (precedes clarify/truncated handling)
@@ -388,9 +391,8 @@ class Conductor:
                     clarify_slot=tool_outputs.get("clarify")
                 )
 
-            # Plan execution rule (composition-lite):
-            # If a tool emits a trajectory with steps that carry obligations, execute them in order.
-            sub_results: List[ExecutionResult] = []
+            # Composition-lite rule: if a tool outputs a trajectory whose steps contain obligations,
+            # execute them deterministically using the same router.
             try:
                 traj = (tool_outputs or {}).get("trajectory") or {}
                 steps = (traj or {}).get("steps") or []
@@ -407,7 +409,6 @@ class Conductor:
                             step_payload = (ob_dict or {}).get("payload")
                             if not step_type or not isinstance(step_payload, dict):
                                 raise ValueError("trajectory step obligation must have {type, payload}")
-                            # Create a DB obligation for the emitted step (for trace/debugging)
                             step_ob = Obligation(
                                 id=f"{obligation_id}_STEP_{idx}",
                                 kind=str(step_type),
@@ -421,7 +422,7 @@ class Conductor:
                             sub_results.append(sr)
                             if sr.clarify_slot or not sr.success:
                                 break
-                        # Attach step answers so parent can return a deterministic summary.
+                        # Attach a deterministic summary for the parent.
                         try:
                             import json as _json
                             answers = []
@@ -525,60 +526,6 @@ class Conductor:
             return None
         except Exception:
             return None
-
-    def _ensure_final_answer(self, tool_name: str, outputs: Dict[str, Any], assertions: List[Assertion]) -> Dict[str, Any]:
-        """Attach outputs['final_answer'] when it's missing, using deterministic rules."""
-        if not isinstance(outputs, dict):
-            return outputs
-        fa = outputs.get("final_answer")
-        if isinstance(fa, str) and fa != "":
-            return outputs
-        out = dict(outputs)
-        # Math
-        if tool_name == "EvalMath":
-            v = out.get("result")
-            if v is None:
-                for a in assertions or []:
-                    if getattr(a, "predicate", None) == "evaluatesTo":
-                        v = getattr(a, "object", None)
-                        break
-            if v is not None:
-                out["final_answer"] = str(v)
-                return out
-        # Count letters
-        if tool_name == "TextOps.CountLetters":
-            v = out.get("count")
-            if v is None:
-                for a in assertions or []:
-                    if getattr(a, "predicate", None) == "containsLetterCount":
-                        v = getattr(a, "object", None)
-                        break
-            if v is not None:
-                out["final_answer"] = str(v)
-                return out
-        # PeopleSQL
-        if tool_name == "PeopleSQL":
-            try:
-                import json as _json
-                people = out.get("people") or []
-                names = [p.get("name") for p in people if isinstance(p, dict) and p.get("name")]
-                out["final_answer"] = _json.dumps(names)
-                return out
-            except Exception:
-                pass
-        # Reasoning.Core
-        if tool_name == "Reasoning.Core":
-            if out.get("kind") == "logic.answer":
-                out["final_answer"] = "true" if out.get("value") else "false"
-                return out
-            if out.get("kind") == "plan":
-                try:
-                    import json as _json
-                    out["final_answer"] = _json.dumps((out.get("trajectory") or {}).get("steps", []))
-                    return out
-                except Exception:
-                    pass
-        return out
 
     def _build_missing_capability_payload(
         self,
@@ -705,11 +652,27 @@ class Conductor:
                     "simulate_slow": payload.get("simulate_slow"),
                     "budgets": (payload.get("budgets") or (parsed_obligation.raw_payload.get("budgets") if isinstance(parsed_obligation.raw_payload, dict) else None)) or {"max_depth": 3, "beam": 4, "time_ms": 100}
                 }
-            if parsed_obligation.type == "ACHIEVE" and payload.get("kind") == "plan":
+            if parsed_obligation.type == "ACHIEVE" and payload.get("state") == "plan":
+                # Provide tool contracts so Reasoning.Core can synthesize steps from contracts
+                # (without hardcoding tool names or step structures in code).
+                tool_contracts = []
+                for t in (self.registry.tools or {}).values():
+                    tool_contracts.append(
+                        {
+                            "name": t.name,
+                            "satisfies": list(getattr(t, "satisfies", []) or []),
+                            "consumes": list(getattr(t, "consumes", []) or []),
+                            "produces": list(getattr(t, "produces", []) or []),
+                            "reliability": getattr(t, "reliability", "medium"),
+                            "cost": getattr(t, "cost", "medium"),
+                            "latency_ms": getattr(t, "latency_ms", 100),
+                        }
+                    )
                 return {
                     "mode": payload.get("mode") or "planning",
                     "goal": payload.get("goal"),
-                    "budgets": payload.get("budgets") or {"max_depth": 3, "beam": 3, "time_ms": 150}
+                    "budgets": payload.get("budgets") or {"max_depth": 3, "beam": 3, "time_ms": 150},
+                    "tool_contracts": tool_contracts,
                 }
             return payload
         else:
@@ -904,6 +867,56 @@ class Conductor:
             subs = getattr(er, "sub_results", None) or []
             if subs:
                 out.extend(self._flatten_execution_results(subs))
+        return out
+
+    def _ensure_final_answer(self, tool_name: str, outputs: Dict[str, Any], assertions: List[Assertion]) -> Dict[str, Any]:
+        """Attach outputs['final_answer'] when missing, using deterministic rules."""
+        if not isinstance(outputs, dict):
+            return outputs
+        fa = outputs.get("final_answer")
+        if isinstance(fa, str) and fa != "":
+            return outputs
+        out = dict(outputs)
+        if tool_name == "EvalMath":
+            v = out.get("result")
+            if v is None:
+                for a in assertions or []:
+                    if getattr(a, "predicate", None) == "evaluatesTo":
+                        v = getattr(a, "object", None)
+                        break
+            if v is not None:
+                out["final_answer"] = str(v)
+                return out
+        if tool_name == "TextOps.CountLetters":
+            v = out.get("count")
+            if v is None:
+                for a in assertions or []:
+                    if getattr(a, "predicate", None) == "containsLetterCount":
+                        v = getattr(a, "object", None)
+                        break
+            if v is not None:
+                out["final_answer"] = str(v)
+                return out
+        if tool_name == "PeopleSQL":
+            try:
+                import json as _json
+                people = out.get("people") or []
+                names = [p.get("name") for p in people if isinstance(p, dict) and p.get("name")]
+                out["final_answer"] = _json.dumps(names)
+                return out
+            except Exception:
+                return out
+        if tool_name == "Reasoning.Core":
+            if out.get("kind") == "logic.answer":
+                out["final_answer"] = "true" if out.get("value") else "false"
+                return out
+            if out.get("kind") == "plan":
+                try:
+                    import json as _json
+                    out["final_answer"] = _json.dumps((out.get("trajectory") or {}).get("steps", []))
+                    return out
+                except Exception:
+                    return out
         return out
     
     def _create_error_response(self, trace_id: str, error: str) -> Dict:

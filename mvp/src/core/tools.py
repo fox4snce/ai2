@@ -511,14 +511,88 @@ class ToolExecutor:
         elif mode == "planning":
             goal = inputs.get("goal", {})
             pred = (goal or {}).get("predicate")
-            # Demo: a plan whose steps are literal obligations the conductor can execute deterministically.
-            # goal.args.steps is a list of {type, payload} obligations.
-            if pred == "demo.chain":
+            # Contract-derived step synthesis (deterministic, not full planning):
+            # goal describes a sequence of desired capabilities; we derive obligation steps by matching tool contracts.
+            #
+            # Expected shape:
+            # goal = {
+            #   "predicate": "capability.sequence",
+            #   "args": {
+            #     "sequence": [
+            #        {"type":"REPORT","kind":"query.math"},
+            #        {"type":"REPORT","kind":"query.count"}
+            #     ],
+            #     "inputs": {
+            #        "query.math": {"expr":"2+2"},
+            #        "query.count": {"letter":"r","word":"strawberry"}
+            #     }
+            #   }
+            # }
+            if pred == "capability.sequence":
                 args = (goal or {}).get("args", {}) or {}
-                steps_in = args.get("steps", [])
-                if not isinstance(steps_in, list) or not all(isinstance(s, dict) for s in steps_in):
-                    return {"error": "invalid_demo_chain_steps"}
-                steps = [{"obligation": s} for s in steps_in]
+                seq = args.get("sequence", [])
+                inputs_map = args.get("inputs", {}) or {}
+                contracts = inputs.get("tool_contracts", []) or []
+
+                if not isinstance(seq, list) or not all(isinstance(s, dict) for s in seq):
+                    return {"error": "invalid_capability_sequence"}
+                if not isinstance(inputs_map, dict):
+                    return {"error": "invalid_capability_inputs"}
+                if not isinstance(contracts, list):
+                    return {"error": "invalid_tool_contracts"}
+
+                # Index tools by (capability_kind, obligation_type) they satisfy, based on satisfies patterns.
+                def _score(c: dict) -> tuple:
+                    rel = {"high": 3, "medium": 2, "low": 1}.get(str(c.get("reliability") or "medium"), 2)
+                    cost = {"tiny": 4, "low": 3, "medium": 2, "high": 1}.get(str(c.get("cost") or "medium"), 2)
+                    lat = int(c.get("latency_ms") or 100)
+                    name = str(c.get("name") or "")
+                    return (-rel, -cost, lat, name)
+
+                def _matches_satisfies(tool: dict, want_type: str, want_kind: str) -> bool:
+                    sat = tool.get("satisfies") or []
+                    if not isinstance(sat, list):
+                        return False
+                    target = f"{want_type}({want_kind})"
+                    return target in sat or want_type in sat
+
+                def _consumes_kind(tool: dict, want_kind: str) -> bool:
+                    consumes = tool.get("consumes") or []
+                    if not isinstance(consumes, list):
+                        return False
+                    return any(isinstance(c, dict) and c.get("kind") == want_kind for c in consumes)
+
+                steps = []
+                for item in seq:
+                    want_type = str(item.get("type") or "")
+                    want_kind = str(item.get("kind") or "")
+                    if want_type not in ("REPORT", "ACHIEVE", "MAINTAIN", "AVOID", "JUSTIFY", "SCHEDULE"):
+                        return {"error": "unsupported_sequence_type"}
+                    if not want_kind:
+                        return {"error": "missing_sequence_kind"}
+
+                    # Choose best tool deterministically.
+                    candidates = []
+                    for t in contracts:
+                        if not isinstance(t, dict):
+                            continue
+                        if _consumes_kind(t, want_kind) and _matches_satisfies(t, want_type, want_kind):
+                            candidates.append(t)
+                    if not candidates:
+                        return {
+                            "error": "missing_capability",
+                            "missing": {"type": want_type, "kind": want_kind},
+                        }
+                    candidates.sort(key=_score)
+                    chosen = candidates[0]
+
+                    # Build step obligation (tool name is NOT embedded; conductor will route via contracts again).
+                    payload_inputs = inputs_map.get(want_kind, {})
+                    if not isinstance(payload_inputs, dict):
+                        return {"error": "invalid_step_inputs"}
+                    step_ob = {"type": want_type, "payload": {"kind": want_kind, **payload_inputs}}
+                    steps.append({"obligation": step_ob, "derived_from": {"tool": chosen.get("name")}})
+
                 return {
                     "kind": "plan",
                     "trajectory": {"steps": steps, "metrics": {"depth_used": 1, "beam_used": 1, "time_ms": 0}},

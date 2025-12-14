@@ -18,12 +18,16 @@ def test_reasoning_core_plan_executes_emitted_obligations():
                         "state": "plan",
                         "mode": "planning",
                         "goal": {
-                            "predicate": "demo.chain",
+                            "predicate": "capability.sequence",
                             "args": {
-                                "steps": [
-                                    {"type": "REPORT", "payload": {"kind": "math", "expr": "2+2"}},
-                                    {"type": "REPORT", "payload": {"kind": "count", "letter": "r", "word": "strawberry"}},
-                                ]
+                                "sequence": [
+                                    {"type": "REPORT", "kind": "query.math"},
+                                    {"type": "REPORT", "kind": "query.count"},
+                                ],
+                                "inputs": {
+                                    "query.math": {"expr": "2+2"},
+                                    "query.count": {"letter": "r", "word": "strawberry"},
+                                },
                             },
                         },
                         "budgets": {"max_depth": 1, "beam": 1, "time_ms": 50},
