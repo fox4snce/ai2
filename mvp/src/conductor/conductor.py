@@ -7,6 +7,8 @@ and execution. It implements the core loops: request loop, plan loop, and verify
 
 import uuid
 import time
+import copy
+import re
 from datetime import datetime
 from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass
@@ -402,24 +404,57 @@ class Conductor:
                         if isinstance(st, dict) and isinstance(st.get("obligation"), dict):
                             obligation_steps.append(st.get("obligation"))
                     if obligation_steps:
+                        # Template mechanism: allow later steps to reference earlier step outputs.
+                        # Format: {{STEP_1.result}} where "1" is the 1-based step index within this trajectory,
+                        # and "result" is a key in that step's tool outputs.
+                        token_re = re.compile(r"\{\{\s*STEP_(\d+)\.([A-Za-z0-9_]+)\s*\}\}")
+
+                        def _resolve_templates(obj: Any, prior_outputs: List[Dict[str, Any]]) -> Any:
+                            if isinstance(obj, dict):
+                                return {k: _resolve_templates(v, prior_outputs) for k, v in obj.items()}
+                            if isinstance(obj, list):
+                                return [_resolve_templates(v, prior_outputs) for v in obj]
+                            if not isinstance(obj, str):
+                                return obj
+
+                            def _replace(match: re.Match) -> str:
+                                idx = int(match.group(1))
+                                key = match.group(2)
+                                if idx < 1 or idx > len(prior_outputs):
+                                    return match.group(0)
+                                val = (prior_outputs[idx - 1] or {}).get(key)
+                                if val is None:
+                                    return match.group(0)
+                                return str(val)
+
+                            return token_re.sub(_replace, obj)
+
                         from ..core.obligations import ObligationParser
                         parser = ObligationParser()
+                        prior_step_outputs: List[Dict[str, Any]] = []
                         for idx, ob_dict in enumerate(obligation_steps, start=1):
                             step_type = (ob_dict or {}).get("type")
                             step_payload = (ob_dict or {}).get("payload")
                             if not step_type or not isinstance(step_payload, dict):
                                 raise ValueError("trajectory step obligation must have {type, payload}")
+
+                            # Keep the planner's trajectory visible in traces (do not mutate it).
+                            resolved_payload = _resolve_templates(copy.deepcopy(step_payload), prior_step_outputs)
                             step_ob = Obligation(
                                 id=f"{obligation_id}_STEP_{idx}",
                                 kind=str(step_type),
-                                details_jsonb=step_payload,
+                                details_jsonb=resolved_payload,
                                 status="active",
                                 event_id=None,
                             )
                             step_id = self.db.create_obligation(step_ob)
-                            parsed_step = parser.parse_obligations({"obligations": [ob_dict]})[0]
+                            parsed_step = parser.parse_obligations({"obligations": [{"type": step_type, "payload": resolved_payload}]})[0]
                             sr = self._execute_plan_loop(step_id, parsed_step)
                             sub_results.append(sr)
+                            if sr.success and isinstance(sr.outputs, dict):
+                                prior_step_outputs.append(sr.outputs)
+                            else:
+                                prior_step_outputs.append({})
                             if sr.clarify_slot or not sr.success:
                                 break
                         # Attach a deterministic summary for the parent.

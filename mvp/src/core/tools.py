@@ -573,6 +573,7 @@ class ToolExecutor:
                     return None
 
                 steps = []
+                missing_steps = []
                 for item in seq:
                     want_type = str(item.get("type") or "")
                     want_kind = str(item.get("kind") or "")
@@ -588,18 +589,19 @@ class ToolExecutor:
                             continue
                         if _consumes_kind(t, want_kind) and _matches_satisfies(t, want_type, want_kind):
                             candidates.append(t)
-                    if not candidates:
-                        return {
-                            "error": "missing_capability",
-                            "missing": {"type": want_type, "kind": want_kind},
-                        }
-                    candidates.sort(key=_score)
-
-                    # Build step obligation (tool name is NOT embedded; conductor will route via contracts again).
+                    # Even if no tool exists, still emit the step obligation so the conductor can
+                    # attempt execution and trigger the DISCOVER_OP/toolsmith loop mid-plan.
                     payload_inputs = inputs_map.get(want_kind, {})
                     if not isinstance(payload_inputs, dict):
                         return {"error": "invalid_step_inputs"}
+                    step_payload = {"kind": want_kind, **payload_inputs}
+                    if not candidates:
+                        steps.append({"obligation": {"type": want_type, "payload": step_payload}, "derived_from": {"tool": None}})
+                        missing_steps.append({"type": want_type, "kind": want_kind})
+                        continue
+                    candidates.sort(key=_score)
 
+                    # Build step obligation (tool name is NOT embedded; conductor will route via contracts again).
                     # Harden contract matching: validate payload_inputs against consumes schema BEFORE emitting.
                     # This prevents the "card house collapses" feeling where the plan is emitted but cannot run.
                     schema_mismatches = []
@@ -611,7 +613,8 @@ class ToolExecutor:
                             schema_mismatches.append({"tool": t.get("name"), "reason": "missing_consumes_schema"})
                             continue
                         try:
-                            jsonschema.validate(payload_inputs, schema)
+                            # Validate the full payload shape as it will be executed (including kind).
+                            jsonschema.validate(step_payload, schema)
                             valid_candidates.append(t)
                         except Exception as e:
                             schema_mismatches.append({"tool": t.get("name"), "reason": "schema_mismatch", "error": str(e)})
@@ -625,12 +628,12 @@ class ToolExecutor:
                             req = schema.get("required") if isinstance(schema, dict) else None
                             if isinstance(req, list):
                                 for field in req:
-                                    if isinstance(field, str) and field not in payload_inputs:
+                                    if isinstance(field, str) and field not in step_payload:
                                         return {
                                             "kind": "plan",
                                             "clarify": field,
                                             "why_not": ["input_missing"],
-                                            "missing_inputs": {"kind": want_kind, "required": req, "provided": list(payload_inputs.keys())},
+                                            "missing_inputs": {"kind": want_kind, "required": req, "provided": list(step_payload.keys())},
                                             "found_tools": [t.get("name") for t in candidates if isinstance(t, dict)],
                                         }
                         except Exception:
@@ -640,7 +643,7 @@ class ToolExecutor:
                             "missing_capability": {
                                 "type": "missing_capability",
                                 "reason": "tools_exist_but_inputs_do_not_match_schema",
-                                "requested": {"type": want_type, "kind": want_kind, "inputs": payload_inputs},
+                                "requested": {"type": want_type, "kind": want_kind, "inputs": step_payload},
                                 "candidates": [t.get("name") for t in candidates if isinstance(t, dict)],
                                 "mismatches": schema_mismatches,
                             },
@@ -649,7 +652,7 @@ class ToolExecutor:
                     # Deterministic tie-break after schema filtering.
                     valid_candidates.sort(key=_score)
                     chosen = valid_candidates[0]
-                    step_ob = {"type": want_type, "payload": {"kind": want_kind, **payload_inputs}}
+                    step_ob = {"type": want_type, "payload": step_payload}
                     steps.append({"obligation": step_ob, "derived_from": {"tool": chosen.get("name")}})
 
                 return {
@@ -657,6 +660,7 @@ class ToolExecutor:
                     "trajectory": {"steps": steps, "metrics": {"depth_used": 1, "beam_used": 1, "time_ms": 0}},
                     "feasible": True,
                     "capabilities_satisfied": ["ACHIEVE.plan"],
+                    "unresolved_steps": missing_steps,
                 }
             if pred == "event.scheduled":
                 steps = ["ResolvePerson", "CheckCalendar", "ProposeSlots", "CreateEvent"]

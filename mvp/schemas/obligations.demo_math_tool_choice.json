@@ -1,0 +1,25 @@
+{
+  "obligations": [
+    {
+      "type": "ACHIEVE",
+      "payload": {
+        "state": "plan",
+        "mode": "planning",
+        "goal": {
+          "predicate": "capability.sequence",
+          "args": {
+            "sequence": [
+              { "type": "REPORT", "kind": "query.math" }
+            ],
+            "inputs": {
+              "query.math": { "expr": "2+2" }
+            }
+          }
+        },
+        "budgets": { "max_depth": 1, "beam": 1, "time_ms": 50 }
+      }
+    }
+  ]
+}
+
+

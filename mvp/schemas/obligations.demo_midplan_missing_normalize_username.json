@@ -1,0 +1,27 @@
+{
+  "obligations": [
+    {
+      "type": "ACHIEVE",
+      "payload": {
+        "state": "plan",
+        "mode": "planning",
+        "goal": {
+          "predicate": "capability.sequence",
+          "args": {
+            "sequence": [
+              { "type": "REPORT", "kind": "query.math" },
+              { "type": "REPORT", "kind": "normalize_username_demo" }
+            ],
+            "inputs": {
+              "query.math": { "expr": "2+2" },
+              "normalize_username_demo": { "username": "  Jeff  " }
+            }
+          }
+        },
+        "budgets": { "max_depth": 1, "beam": 2, "time_ms": 50 }
+      }
+    }
+  ]
+}
+
+
