@@ -124,6 +124,29 @@ python -m src.api
 ### 4) Use the API
 
 #### Direct Obligations (Deterministic, No LLM)
+
+**PowerShell (Windows):**
+```powershell
+# Math calculation
+Invoke-RestMethod -Uri http://127.0.0.1:8000/v1/obligations/execute `
+  -Method POST `
+  -ContentType "application/json" `
+  -Body '{"obligations":[{"type":"REPORT","payload":{"kind":"math","expr":"2+2"}}]}'
+
+# Count letters in word
+Invoke-RestMethod -Uri http://127.0.0.1:8000/v1/obligations/execute `
+  -Method POST `
+  -ContentType "application/json" `
+  -Body '{"obligations":[{"type":"REPORT","payload":{"kind":"count","letter":"r","word":"strawberry"}}]}'
+
+# Query people database
+Invoke-RestMethod -Uri http://127.0.0.1:8000/v1/obligations/execute `
+  -Method POST `
+  -ContentType "application/json" `
+  -Body '{"obligations":[{"type":"REPORT","payload":{"kind":"query.people","filters":[{"is_friend":"user"},{"city":"Seattle"}]}}]}'
+```
+
+**Bash/Linux/Mac:**
 ```bash
 # Math calculation
 curl -s -X POST http://127.0.0.1:8000/v1/obligations/execute \
